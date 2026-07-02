@@ -47,11 +47,17 @@ Distribution/valitool
 Distribution/visualization23x
 Distribution/visualization30x
 Distribution/java
+Distribution/saxon
 Distribution/apache-fop
 Distribution/mustangproject
 Schema
 Testdata
 Res
+GPATH
+GTAGS
+GRTAGS
+Samples/landrix-valitool.inc
+.vscode/
 
 xrechnung-3.0.0-testsuite-2023-07-31
 Webservice via Peppol
@@ -97,3 +103,5 @@ __recovery/
 *.stat
 
 *.rar
+# FreePascal-Test-Build-Ausgaben
+Tests/FreePascal/out/

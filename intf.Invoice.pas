@@ -1,7 +1,7 @@
 {
 License XRechnung-for-Delphi
 
-Copyright (C) 2025 Landrix Software GmbH & Co. KG
+Copyright (C) 2026 Landrix Software GmbH & Co. KG
 Sven Harazim, info@landrix.de
 Version 3.0.2
 
@@ -21,11 +21,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 unit intf.Invoice;
 
+{$IFDEF FPC}
+  {$MODE DELPHIUNICODE}
+  {$H+}
+  {$codepage utf8}
+{$ENDIF}
+
 interface
 
 uses
+  {$IFDEF FPC}
+  SysUtils,Classes,Types,Contnrs,base64
+  {$ELSE}
   System.SysUtils,System.Classes,System.Types,System.Contnrs
   ,System.NetEncoding
+  {$ENDIF}
   ;
 
 type
@@ -34,11 +44,15 @@ type
     NON_EXISTENT = 'non-existent';
   end;
 
+  {$IFDEF FPC}
+  TInvoiceListItemType = NativeInt;
+  {$ELSE}
   {$IF CompilerVersion >= 36.0}
   TInvoiceListItemType = NativeInt;
   {$ELSE}
   TInvoiceListItemType = Integer;
   {$IFEND}
+  {$ENDIF}
   TInvoiceTypeCode = (
     itc_None,
 
@@ -225,8 +239,10 @@ type
                       ,iuc_millimetre
                       ,iuc_minute_unit_of_time
                       ,iuc_second_unit_of_time
+                      ,iuc_millilitre
                       ,iuc_litre
                       ,iuc_hour
+                      ,iuc_milligram
                       ,iuc_gram
                       ,iuc_kilogram
                       ,iuc_kilometre
@@ -278,6 +294,7 @@ type
     destructor Destroy; override;
     procedure EmbedDataFromStream(_Stream : TStream);
     procedure EmbedDataFromFile(const _Filename : String);
+    procedure EmbedDataFromText(const _Value : TStrings);
     function GetDataAsBase64 : String;
     procedure SetDataFromBase64(const _Val : String);
     function ContainsBinaryObject : Boolean;
@@ -546,6 +563,7 @@ type
     BuyerAccountingReference : String; //BT-133 Buchungsreferenz des Kaeufers für die Rechnungsposition, vom Kaeufer vergeben
     TaxPercent : double; //BG-30, BT-152 MwSt
     TaxCategory : TInvoiceDutyTaxFeeCategoryCode; //BG-30, BT-151 MwSt-Einordnung
+    TaxExemptionReason : String;
     // BG-29 Detailinformationen zum (Artikel-)-Preis
     GrossPriceAmount : Currency; //BG-29, BT-148 Brutto-Einzelpreis
     DiscountOnTheGrossPrice : Currency; //BG-29, BT-147 Rabatt auf den Bruttopreis ergibt Nettopreis, nur ein Rabatt moeglich wegen UBL, obwohl CII mehrere erlaubt
@@ -556,8 +574,8 @@ type
     AllowanceCharges : TInvoiceAllowanceCharges; // BG-27 (BT-136..BT-140) und BG-28 (BT-141..BT-145)
     InvoiceLinePeriodStartDate : TDate; //BG-26, BT-134 Leistungszeitraum Beginn
     InvoiceLinePeriodEndDate : TDate; //BG-26, BT-135 Leistungszeitraum Ende
-    //BG-31, BT-158 fehlt , "Kennung der Artikelklassifizierung", (0..n)
-    //BG-31, BT-159 fehlt, "Artikelherkunftsland"
+    //BG-31, BT-158 fehlt , DesignatedProductClassification "Kennung der Artikelklassifizierung", (0..n)
+    OriginTradeCountry : String; //BG-31, BT-159 Artikelherkunftsland z.B. DE
     ItemAttributes : TInvoiceLineItemAttributes; //BG-31:BG-32 (BT-160..BT-161)
 
     // Extension XRechnung
@@ -633,7 +651,9 @@ type
 
     Address : TInvoiceAddress;
 
-    IdentifierSellerBuyer : String; //BT-29 Kreditor-Nr AccountingSupplierParty / Debitor-Nr AccountingCustomerParty
+    IdentifierSellerBuyer : String; //BT-29 Kreditor-Nr AccountingSupplierParty / BT-46 Debitor-Nr AccountingCustomerParty
+    GlobalIdentifierSellerBuyer : String; //BT-29-0, BT-46-0, optional nur CII
+    GlobalIdentifierSellerBuyerSchemeID : String; //BT-29-1, BT-46-1, optional nur CII, Werte 0021 : SWIFT, 0088 : EAN, 0060 : DUNS, 0177 : ODETTE
     BankAssignedCreditorIdentifier : String; //Glaeubiger-ID (BT-90)
 
     VATCompanyID : String;   //BT-31 UStID
@@ -644,6 +664,7 @@ type
     ContactElectronicMail : String;
     AdditionalLegalInformationSeller : String; //BT-33 Weitere rechtliche Informationen zum Verkaeufer
     ElectronicAddressSellerBuyer : String; //BT-34, BT-49 Pflicht
+    ElectronicAddressSellerBuyerSchemeID : String; //EM E-Mail (nicht bei Peppol https://docs.peppol.eu/poacc/billing/3.0/codelist/eas/), 9930 Peppol-ID, Pflicht
   public
     constructor Create;
     destructor Destroy; override;
@@ -651,8 +672,9 @@ type
 
   TInvoiceDeliveryInformation = class(TObject)
   public
-    Name : String;
-    LocationIdentifier : String; //optional Ein Bezeichner fuer den Ort, an den die Waren geliefert oder an dem die Dienstleistungen erbracht werden.
+    Name : String; //BT-70
+    LocationIdentifier : String; //BT-71-0 CII, BT-71 UBL, optional Ein Bezeichner fuer den Ort, an den die Waren geliefert oder an dem die Dienstleistungen erbracht werden.
+    LocationIdentifierSchemeID : String; //BT-71-0 CII, BT-71 UBL, optional Schema des LocationIdentifier, Standard 0088 (GLN nach ISO/IEC 6523), Werte 0021 : SWIFT, 0088 : EAN, 0060 : DUNS, 0177 : ODETTE
     Address : TInvoiceAddress;
     ActualDeliveryDate : TDate; //BT-72 Lieferdatum
   public
@@ -742,6 +764,7 @@ type
 
   TInvoice = class(TObject)
   public
+    ProfileID : String; //BT-23 //Identifiziert den Geschäftsprozesskontext, in dem die Transaktion erscheint, damit der Käufer die Rechnung angemessen bearbeiten kann.
     InvoiceNumber : String;  //BT-1 Rechnungsnummer
     InvoiceIssueDate : TDate; //BT-2 Rechnungsdatum
     InvoiceDueDate : TDate; //BT-9 Faelligkeitsdatum
@@ -758,7 +781,10 @@ type
     ProjectReference : String; //BT-11
     ReceiptDocumentReference : String; //BT-15
     ContractDocumentReference : String; //BT-12
-    DeliveryReceiptNumber : String; //BT-16 Lieferscheinnummer (Lieferscheindatum fehlt und wuerde nur in ZUGFeRD unterstuetzt)
+    DeliveryReceiptNumber : String; //BT-16 Lieferscheinnummer XRechnung CII, UBL
+    DeliveryReceiptDate : TDate;    //BT-X-200 Lieferscheindatum ZUGFeRD-CII, XRechnung CII u UBL nicht unterstuetzt
+    DeliveryReceiptNumberExtended : String; //BT-X-202 Lieferscheinnummer ZUGFeRD-CII-Extended, Falls man es benötigt
+    DeliveryReceiptDateExtended : TDate;    //BT-X-203 Lieferscheindatum ZUGFeRD-CII-Extended, Falls man es benötigt
     BuyerAccountingReference : String; //BT-19 Buchungsreferenz des Kaeufers für die Rechnung UBL ein Wert, CII Liste
 
     AccountingSupplierParty : TInvoiceAccountingParty;
@@ -797,11 +823,11 @@ type
     TaxAmountTotal : Currency;
     TaxAmountSubtotals : TInvoiceTaxAmounts;
 
-    LineAmount : Currency;
+    LineAmount : Currency;            //BT-106
     TaxExclusiveAmount : Currency;    //BT-109
     TaxInclusiveAmount : Currency;    //BT-112
-    AllowanceTotalAmount : Currency;
-    ChargeTotalAmount : Currency;
+    AllowanceTotalAmount : Currency;  //BT-107
+    ChargeTotalAmount : Currency;     //BT-108
     PrepaidAmount : Currency;         //BT-113
     PayableRoundingAmount : Currency; //BT-114
     PayableAmount : Currency;         //BT-115 = BT-112 - BT-113 + BT-114 + Summe BT-DEX-002
@@ -850,6 +876,7 @@ end;
 
 procedure TInvoice.Clear;
 begin
+  ProfileID := 'urn:fdc:peppol.eu:2017:poacc:billing:01:1.0';
   InvoiceLines.Clear;
   AllowanceCharges.Clear;
   PrecedingInvoiceReferences.Clear;
@@ -1052,6 +1079,7 @@ begin
   ItemAttributes := TInvoiceLineItemAttributes.Create;
   InvoiceLinePeriodStartDate := 0;
   InvoiceLinePeriodEndDate := 0;
+  OriginTradeCountry := '';
 end;
 
 destructor TInvoiceLine.Destroy;
@@ -1073,12 +1101,24 @@ begin
   _Success := false;
   _UnitOfMeasure := Trim(_UnitOfMeasure);
   if _UnitOfMeasure = '' then
+  begin
+    Result := iuc_one;
+    _Success := true;
     exit;
+  end;
+
   if SameText(_UnitOfMeasure,'st') or
      SameText(_UnitOfMeasure,'st.') or
      SameText(_UnitOfMeasure,'stk.') or
      SameText(_UnitOfMeasure,'stk') or
-     SameText(_UnitOfMeasure,'C62') or
+     SameText(_UnitOfMeasure,'pc') or
+     SameText(_UnitOfMeasure,'pcs') or
+     SameText(_UnitOfMeasure,'stueck') or
+     SameText(_UnitOfMeasure,'stuecke') or
+     SameText(_UnitOfMeasure,'stück') or
+     SameText(_UnitOfMeasure,'stücke') or
+     SameText(_UnitOfMeasure,'piece') or
+     SameText(_UnitOfMeasure,'pieces') or
      SameText(_UnitOfMeasure,'stck') then
   begin
     Result := iuc_piece;
@@ -1089,13 +1129,26 @@ begin
      SameText(_UnitOfMeasure,'psch') or
      SameText(_UnitOfMeasure,'psch.') or
      SameText(_UnitOfMeasure,'pschl') or
-     SameText(_UnitOfMeasure,'pschl.') then
+     SameText(_UnitOfMeasure,'pschl.') or
+     SameText(_UnitOfMeasure,'pausch') or
+     SameText(_UnitOfMeasure,'pauschal') or
+     SameText(_UnitOfMeasure,'flat') or
+     SameText(_UnitOfMeasure,'flat rate') or
+     SameText(_UnitOfMeasure,'lump sum') or
+     SameText(_UnitOfMeasure,'fix') then
   begin
     Result := iuc_flaterate;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'mal') then
+  if SameText(_UnitOfMeasure,'mal') or
+     SameText(_UnitOfMeasure,'C62') or
+     SameText(_UnitOfMeasure,'ea') or
+     SameText(_UnitOfMeasure,'unit') or
+     SameText(_UnitOfMeasure,'units') or
+     SameText(_UnitOfMeasure,'one') or
+     SameText(_UnitOfMeasure,'AE') or
+     SameText(_UnitOfMeasure,'einheit') then
   begin
     Result := iuc_one;
     _Success := true;
@@ -1103,6 +1156,10 @@ begin
   end;
   if SameText(_UnitOfMeasure,'std') or
      SameText(_UnitOfMeasure,'std.') or
+     SameText(_UnitOfMeasure,'stunde') or
+     SameText(_UnitOfMeasure,'stunden') or
+     SameText(_UnitOfMeasure,'hour') or
+     SameText(_UnitOfMeasure,'hours') or
      SameText(_UnitOfMeasure,'h') then
   begin
     Result := iuc_hour;
@@ -1110,56 +1167,96 @@ begin
     exit;
   end;
   if SameText(_UnitOfMeasure,'tag') or
+     SameText(_UnitOfMeasure,'d') or
+     SameText(_UnitOfMeasure,'day') or
+     SameText(_UnitOfMeasure,'days') or
      SameText(_UnitOfMeasure,'tage') then
   begin
     Result := iuc_day;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'monat') then
+  if SameText(_UnitOfMeasure,'monat') or
+     SameText(_UnitOfMeasure,'mon') or
+     SameText(_UnitOfMeasure,'mo') or
+     SameText(_UnitOfMeasure,'mth') or
+     SameText(_UnitOfMeasure,'monate') or
+     SameText(_UnitOfMeasure,'month') or
+     SameText(_UnitOfMeasure,'months') or
+     SameText(_UnitOfMeasure,'mona') then
   begin
     Result := iuc_month;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'%') then
+  if SameText(_UnitOfMeasure,'%') or
+     SameText(_UnitOfMeasure,'nt') or
+     SameText(_UnitOfMeasure,'nte') or
+     SameText(_UnitOfMeasure,'percent') then
   begin
     Result := iuc_percent;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'woche') then
+  if SameText(_UnitOfMeasure,'woche') or
+     SameText(_UnitOfMeasure,'wochen') or
+     SameText(_UnitOfMeasure,'week') or
+     SameText(_UnitOfMeasure,'weeks') then
   begin
     Result := iuc_week;
     _Success := true;
     exit;
   end;
+  if SameText(_UnitOfMeasure,'mg') or
+     SameText(_UnitOfMeasure,'milligramm') or
+     SameText(_UnitOfMeasure,'milligram') then
+  begin
+    Result := iuc_milligram;
+    _Success := true;
+    exit;
+  end;
   if SameText(_UnitOfMeasure,'g') or
-     SameText(_UnitOfMeasure,'Gramm') then
+     SameText(_UnitOfMeasure,'gr') or
+     SameText(_UnitOfMeasure,'gramm') or
+     SameText(_UnitOfMeasure,'gram') then
   begin
     Result := iuc_gram;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'kg') then
+  if SameText(_UnitOfMeasure,'kg') or
+     SameText(_UnitOfMeasure,'kilogramm') or
+     SameText(_UnitOfMeasure,'kilogram') or
+     SameText(_UnitOfMeasure,'kilograms') then
   begin
     Result := iuc_kilogram;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'km') then
+  if SameText(_UnitOfMeasure,'km') or
+     SameText(_UnitOfMeasure,'kilometer') or
+     SameText(_UnitOfMeasure,'kilometre') or
+     SameText(_UnitOfMeasure,'kilometres') or
+     SameText(_UnitOfMeasure,'kilometers') then
   begin
     Result := iuc_kilometre;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'kwh') then
+  if SameText(_UnitOfMeasure,'kwh') or
+     SameText(_UnitOfMeasure,'kilowattstunde') or
+     SameText(_UnitOfMeasure,'kilowattstunden') or
+     SameText(_UnitOfMeasure,'kilowatt hour') or
+     SameText(_UnitOfMeasure,'kilowatt-hour') then
   begin
     Result := iuc_kilowatt_hour;
     _Success := true;
     exit;
   end;
   if SameText(_UnitOfMeasure,'t') or
+     SameText(_UnitOfMeasure,'tonnen') or
+     SameText(_UnitOfMeasure,'ton') or
+     SameText(_UnitOfMeasure,'tons') or
      SameText(_UnitOfMeasure,'tonne') then
   begin
     Result := iuc_tonne_metric_ton;
@@ -1167,9 +1264,14 @@ begin
     exit;
   end;
   if SameText(_UnitOfMeasure,'qm') or
+     SameText(_UnitOfMeasure,'dm2') or
      SameText(_UnitOfMeasure,'m2') or
-     SameText(_UnitOfMeasure,'m'+#178)
-      then
+     SameText(_UnitOfMeasure,'m'+#178) or
+     SameText(_UnitOfMeasure,'quadratmeter') or
+     SameText(_UnitOfMeasure,'square meter') or
+     SameText(_UnitOfMeasure,'square meters') or
+     SameText(_UnitOfMeasure,'square metre') or
+     SameText(_UnitOfMeasure,'square metres') then
   begin
     Result := iuc_square_metre;
     _Success := true;
@@ -1177,8 +1279,14 @@ begin
   end;
   if SameText(_UnitOfMeasure,'qqm')or
      SameText(_UnitOfMeasure,'cbm') or
+     SameText(_UnitOfMeasure,'dm3') or
      SameText(_UnitOfMeasure,'m3') or
-     SameText(_UnitOfMeasure,'m'+#179)
+     SameText(_UnitOfMeasure,'m'+#179) or
+     SameText(_UnitOfMeasure,'kubikmeter') or
+     SameText(_UnitOfMeasure,'cubic meter') or
+     SameText(_UnitOfMeasure,'cubic meters') or
+     SameText(_UnitOfMeasure,'cubic metre') or
+     SameText(_UnitOfMeasure,'cubic metres')
    then
   begin
     Result := iuc_cubic_metre;
@@ -1188,39 +1296,89 @@ begin
   if SameText(_UnitOfMeasure,'m') or
      SameText(_UnitOfMeasure,'lfm') or
      SameText(_UnitOfMeasure,'me') or
+     SameText(_UnitOfMeasure,'meter') or
+     SameText(_UnitOfMeasure,'meters') or
+     SameText(_UnitOfMeasure,'metre') or
+     SameText(_UnitOfMeasure,'metres') or
      SameText(_UnitOfMeasure,'mtr') then
   begin
     Result := iuc_metre;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'mm') then
+  if SameText(_UnitOfMeasure,'mm') or
+     SameText(_UnitOfMeasure,'millimeter') or
+     SameText(_UnitOfMeasure,'millimeters') or
+     SameText(_UnitOfMeasure,'millimetre') or
+     SameText(_UnitOfMeasure,'millimetres') then
   begin
     Result := iuc_millimetre;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'min') then
+  if SameText(_UnitOfMeasure,'qmm') or
+     SameText(_UnitOfMeasure,'mm3') or
+     SameText(_UnitOfMeasure,'mm'+#179) or
+     SameText(_UnitOfMeasure,'kubikmillimeter') or
+     SameText(_UnitOfMeasure,'cubic millimeter') or
+     SameText(_UnitOfMeasure,'cubic millimeters') or
+     SameText(_UnitOfMeasure,'cubic millimetre') or
+     SameText(_UnitOfMeasure,'cubic millimetres') then
+  begin
+    Result := iuc_cubic_millimetre;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'min') or
+     SameText(_UnitOfMeasure,'min') or
+     SameText(_UnitOfMeasure,'minute') or
+     SameText(_UnitOfMeasure,'minuten') or
+     SameText(_UnitOfMeasure,'minutes') then
   begin
     Result := iuc_minute_unit_of_time;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'sek') then
+  if SameText(_UnitOfMeasure,'sek') or
+     SameText(_UnitOfMeasure,'s') or
+     SameText(_UnitOfMeasure,'sekunde') or
+     SameText(_UnitOfMeasure,'sekunden') or
+     SameText(_UnitOfMeasure,'sec') or
+     SameText(_UnitOfMeasure,'second') or
+     SameText(_UnitOfMeasure,'seconds') then
   begin
     Result := iuc_second_unit_of_time;
     _Success := true;
     exit;
   end;
-  if SameText(_UnitOfMeasure,'l') then
+  if SameText(_UnitOfMeasure,'ml') or
+     SameText(_UnitOfMeasure,'milliliter') or
+     SameText(_UnitOfMeasure,'milliliters') or
+     SameText(_UnitOfMeasure,'millilitre') or
+     SameText(_UnitOfMeasure,'millilitres') then
+  begin
+    Result := iuc_millilitre;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'l') or
+     SameText(_UnitOfMeasure,'ltr') or
+     SameText(_UnitOfMeasure,'liter') or
+     SameText(_UnitOfMeasure,'liters') or
+     SameText(_UnitOfMeasure,'litre') or
+     SameText(_UnitOfMeasure,'litres') then
   begin
     Result := iuc_litre;
     _Success := true;
     exit;
   end;
   if SameText(_UnitOfMeasure,'Paket') or
+     SameText(_UnitOfMeasure,'packet') or
+     SameText(_UnitOfMeasure,'pkg') or
+     SameText(_UnitOfMeasure,'parcel') or
      SameText(_UnitOfMeasure,'PCK') or
      SameText(_UnitOfMeasure,'Pack') or
+     SameText(_UnitOfMeasure,'VP') or
      SameText(_UnitOfMeasure,'Kart.') then
   begin
     Result := iuc_packaging;
@@ -1251,16 +1409,34 @@ begin
 end;
 
 procedure TInvoiceAttachment.EmbedDataFromFile(const _Filename: String);
+const
+  RETRY_COUNT = 5;
+  RETRY_DELAY_MS = 150;
 var
   str : TFileStream;
+  attempt : Integer;
 begin
   if not FileExists(_Filename) then
     exit;
-  str := TFileStream.Create(_Filename,fmOpenRead);
+  attempt := 0;
+  while true do
   try
-    EmbedDataFromStream(str);
-  finally
-    str.Free;
+    str := TFileStream.Create(_Filename, fmOpenRead or fmShareDenyNone);
+    try
+      EmbedDataFromStream(str);
+    finally
+      str.Free;
+    end;
+    break;
+  except
+    on E : EFOpenError do
+    begin
+      //Datei ist (noch) durch einen anderen Prozess gesperrt - kurz warten und erneut versuchen.
+      Inc(attempt);
+      if attempt >= RETRY_COUNT then
+        raise;
+      TThread.Sleep(RETRY_DELAY_MS);
+    end;
   end;
 end;
 
@@ -1272,7 +1448,42 @@ begin
   Data.LoadFromStream(_Stream);
 end;
 
+procedure TInvoiceAttachment.EmbedDataFromText(const _Value: TStrings);
+begin
+  if _Value = nil then
+    exit;
+  Data.Clear;
+  _Value.SaveToStream(Data,TEncoding.Unicode);
+end;
+
 function TInvoiceAttachment.GetDataAsBase64: String;
+{$IFDEF FPC}
+var
+  ms : TMemoryStream;
+  enc : TBase64EncodingStream;
+  raw : RawByteString;
+begin
+  Result := '';
+  Data.Seek(0,soFromBeginning);
+  if Data.Size = 0 then
+    exit;
+  ms := TMemoryStream.Create;
+  try
+    enc := TBase64EncodingStream.Create(ms);
+    try
+      enc.CopyFrom(Data,Data.Size);
+    finally
+      enc.Free; // schreibt das letzte Quartett (Flush/Finalize)
+    end;
+    SetLength(raw,ms.Size);
+    if ms.Size > 0 then
+      Move(ms.Memory^,raw[1],ms.Size);
+    Result := String(raw); // Base64 ist reines ASCII
+  finally
+    ms.Free;
+  end;
+end;
+{$ELSE}
 var
   str : TMemoryStream;
   base64 : System.NetEncoding.TBase64Encoding;
@@ -1297,8 +1508,28 @@ begin
     str.Free;
   end;
 end;
+{$ENDIF}
 
 procedure TInvoiceAttachment.SetDataFromBase64(const _Val: String);
+{$IFDEF FPC}
+var
+  ss : TStringStream;
+  dec : TBase64DecodingStream;
+begin
+  Data.Clear;
+  if _Val = '' then
+    exit;
+  ss := TStringStream.Create(AnsiString(_Val));
+  dec := TBase64DecodingStream.Create(ss);
+  try
+    Data.CopyFrom(dec,0); // 0 = gesamten Quellstrom kopieren
+    Data.Seek(0,soFromBeginning);
+  finally
+    dec.Free;
+    ss.Free;
+  end;
+end;
+{$ELSE}
 var
   str : TMemoryStream;
   internalValue : AnsiString;
@@ -1317,6 +1548,7 @@ begin
     str.Free;
   end;
 end;
+{$ENDIF}
 
 { TInvoiceAttachmentList }
 
@@ -1460,6 +1692,7 @@ end;
 constructor TInvoiceDeliveryInformation.Create;
 begin
   Address := TInvoiceAddress.Create;
+  LocationIdentifierSchemeID := '0088';
 end;
 
 destructor TInvoiceDeliveryInformation.Destroy;
@@ -1526,4 +1759,3 @@ begin
 end;
 
 end.
-

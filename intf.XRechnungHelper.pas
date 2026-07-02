@@ -1,7 +1,7 @@
 {
 License XRechnung-for-Delphi
 
-Copyright (C) 2025 Landrix Software GmbH & Co. KG
+Copyright (C) 2026 Landrix Software GmbH & Co. KG
 Sven Harazim, info@landrix.de
 Version 3.0.2
 
@@ -21,7 +21,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 unit intf.XRechnungHelper;
 
+{$IFDEF FPC}
+  {$MODE DELPHIUNICODE}
+  {$H+}
+{$ENDIF}
+
 interface
+
+{$IFNDEF FPC}
+// MSXML/XPath-basierter Lese-Helfer: ausschliesslich Windows/Delphi.
+// Im FreePascal-Schreib-Scope wird dieser Helfer nicht benoetigt; die Unit
+// bleibt unter FPC bewusst leer (siehe Portierungsdoku).
 
 uses
   System.SysUtils, System.Classes,System.StrUtils
@@ -100,7 +110,8 @@ begin
   Result := _Result <> nil;
 end;
 
-class function TXRechnungXMLHelper.PrepareDocumentForXPathQuerys(_Xml: IXMLDocument): IXMLDOMDocument2;
+class function TXRechnungXMLHelper.PrepareDocumentForXPathQuerys(
+  _Xml: IXMLDocument): IXMLDOMDocument2;
 var
 //  hList: IDOMNodeList;
 //  i: Integer;
@@ -165,5 +176,9 @@ var
 begin
   Result := TXRechnungXMLHelper.SelectNode(_XnRoot,_NodePath,Node);
 end;
+
+{$ELSE}
+implementation
+{$ENDIF}
 
 end.

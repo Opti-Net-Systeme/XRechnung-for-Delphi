@@ -1,5 +1,5 @@
-﻿{
-Copyright (C) 2024 Landrix Software GmbH & Co. KG
+{
+Copyright (C) 2026 Landrix Software GmbH & Co. KG
 Sven Harazim, info@landrix.de
 
 License

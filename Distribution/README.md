@@ -22,7 +22,7 @@ Dann bitte folgende Schritte durchführen:
  - Kopiere und füge den folgenden Befehl ein und drücke [Enter]:
 
 ```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine
+Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope CurrentUser
 ```
 oder auch
 
@@ -33,6 +33,16 @@ Set-ExecutionPolicy Unrestricted
  - Schließe PowerShell und versuche es erneut.
 
 ## Historie
+- 08.12.2025 Update\
+  https://github.com/Saxonica/Saxon-HE/releases/download/SaxonHE12-9/SaxonHE12-9J.zip\
+  https://github.com/LandrixSoftware/validator-configuration-zugferd/releases/download/validation-configuration-zugferd-2.3.3-20251208/validation-configuration-zugferd-2.3.3-2025-12-08.zip
+
+- 20.11.2025 Update\
+  https://github.com/itplr-kosit/validator/releases/download/v1.6.0/validator-1.6.0.zip
+
+- 04.09.2025 Update\
+  https://github.com/itplr-kosit/validator/releases/download/v1.5.2/validator-1.5.2.zip
+
 - 16.07.2025 Update\
   https://github.com/itplr-kosit/validator-configuration-xrechnung/releases/download/release-2025-07-10/validator-configuration-xrechnung_3.0.2_2025-07-10.zip\
   https://github.com/itplr-kosit/xrechnung-visualization/releases/download/v2025-07-10/xrechnung-3.0.2-xrechnung-visualization-2025-07-10.zip

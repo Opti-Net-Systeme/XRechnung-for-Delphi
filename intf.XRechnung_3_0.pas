@@ -2261,7 +2261,7 @@ begin
             AddChild('ram:RateApplicablePercent').Text := TXRechnungHelper.PercentageToStr(_Invoice.AllowanceCharges[i].TaxPercent);
         end;
       end;
-      if (_Profile = ipXRechnung) then
+      if (_Profile = ipXRechnung) or (_Profile = ipZUGFeRDEN16931) then
       with AddChild('ram:SpecifiedTradePaymentTerms') do
       begin
         case _Invoice.PaymentTermsType of

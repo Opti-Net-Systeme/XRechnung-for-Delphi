@@ -34,6 +34,7 @@ uses
   SysUtils,Classes,Types,StrUtils,DateUtils
   ,intf.XRechnungXmlShim
   ,intf.Invoice
+  ,intf.XRechnungHelper
   {$ELSE}
   System.SysUtils,System.Classes,System.Types,System.StrUtils,System.DateUtils
   ,Xml.xmldom,Xml.XMLDoc,Xml.XMLIntf,Xml.XMLSchema
@@ -50,20 +51,19 @@ type
   public
     class procedure SaveDocumentUNCEFACT(_Invoice: TInvoice;_Xml : IXMLDocument; _Profile : TInvoiceProfile);
     class procedure SaveDocumentUBL(_Invoice: TInvoice;_Xml : IXMLDocument; _Profile : TInvoiceProfile);
-    {$IFNDEF FPC}
     class function LoadDocumentUNCEFACT(_Invoice: TInvoice;_Xml : IXMLDocument; out _Error : String) : Boolean;
     class function LoadDocumentUBL(_Invoice: TInvoice;_Xml : IXMLDocument; out _Error : String) : Boolean;
-    {$ENDIF}
+    class procedure BuildSubInvoiceLines(_Invoice : TInvoice; _Lines : TList; _ParentLineIDs : TStrings; _NoAmountLines : TList);
   end;
 
 implementation
 
 uses
+  {$IFNDEF FPC}System.Contnrs,{$ENDIF}
   intf.XRechnung;
 
 { TXRechnungInvoiceAdapter301 }
 
-{$IFNDEF FPC}
 class function TXRechnungInvoiceAdapter301.LoadDocumentUBL(_Invoice: TInvoice;
   _Xml: IXMLDocument; out _Error : String) : Boolean;
 var
@@ -99,6 +99,16 @@ var
       _Invoiceline.InvoiceLinePeriodEndDate := TXRechnungHelper.DateFromStrUBLFormat(TXRechnungXMLHelper.SelectNodeText(node,'.//cbc:EndDate'));
     end;
     _InvoiceLine.OrderLineReference := TXRechnungXMLHelper.SelectNodeText(_Node, './/cac:OrderLineReference/cbc:LineID');
+    //BT-128 : nur die Referenz mit dem Code 130 ist die Objektkennung
+    if TXRechnungXMLHelper.SelectNodes(_Node,'cac:DocumentReference',nodes) then
+    for i := 0 to nodes.length-1 do
+    if TXRechnungXMLHelper.SelectNodeText(nodes.item[i],'cbc:DocumentTypeCode') = '130' then
+    if TXRechnungXMLHelper.SelectNode(nodes.item[i],'cbc:ID',node) then
+    begin
+      _InvoiceLine.ObjectIdentifier := node.text;
+      _InvoiceLine.ObjectIdentifierSchemeID := TXRechnungXMLHelper.SelectAttributeText(node,'schemeID');
+      break;
+    end;
     if TXRechnungXMLHelper.SelectNodes(_Node,'cac:AllowanceCharge',nodes) then
     for i := 0 to nodes.length-1 do
     with _Invoiceline.AllowanceCharges.AddAllowanceCharge do
@@ -131,6 +141,14 @@ var
       if (TXRechnungXMLHelper.SelectAttributeText(node2,'schemeID') = '0160') then
         _Invoiceline.GlobalID_EAN_GTIN := node2.text;
       _Invoiceline.OriginTradeCountry := TXRechnungXMLHelper.SelectNodeText(node,'.//cac:OriginCountry/cbc:IdentificationCode');
+      if TXRechnungXMLHelper.SelectNodes(node,'.//cac:CommodityClassification/cbc:ItemClassificationCode',nodes) then
+      for i := 0 to nodes.length-1 do
+      with _Invoiceline.ItemClassifications.AddItemClassification do
+      begin
+        ClassCode := nodes[i].text;
+        ListID := TXRechnungXMLHelper.SelectAttributeText(nodes[i],'listID');
+        ListVersionID := TXRechnungXMLHelper.SelectAttributeText(nodes[i],'listVersionID');
+      end;
       _Invoiceline.TaxCategory := TXRechnungHelper.InvoiceDutyTaxFeeCategoryCodeFromStr(TXRechnungXMLHelper.SelectNodeText(node,'.//cac:ClassifiedTaxCategory/cbc:ID'));
       _Invoiceline.TaxPercent := TXRechnungHelper.PercentageFromStr(TXRechnungXMLHelper.SelectNodeText(node,'.//cac:ClassifiedTaxCategory/cbc:Percent'));
       if TXRechnungXMLHelper.SelectNodes(node,'.//cac:AdditionalItemProperty',nodes) then
@@ -169,15 +187,21 @@ var
       _Party.ElectronicAddressSellerBuyer := node.text;
       _Party.ElectronicAddressSellerBuyerSchemeID := TXRechnungXMLHelper.SelectAttributeText(node,'schemeID');
     end;
+    //IDs mit schemeID (z.B. 0088 GLN) gehoeren zur GlobalID (BT-29-0/BT-46-0), IDs ohne schemeID zur Kennung (BT-29/BT-46)
     if TXRechnungXMLHelper.SelectNodes(_Node,'.//cac:PartyIdentification',nodes) then
     for i := 0 to nodes.length-1 do
     if TXRechnungXMLHelper.SelectNode(nodes.item[i],'.//cbc:ID',node) then
     begin
-      if SameText(TXRechnungXMLHelper.SelectAttributeText(node,'schemeID'),'0088') then
-        _Party.IdentifierSellerBuyer := node.text
-      else
       if SameText(TXRechnungXMLHelper.SelectAttributeText(node,'schemeID'),'SEPA') then
-        _Party.BankAssignedCreditorIdentifier := node.text;
+        _Party.BankAssignedCreditorIdentifier := node.text
+      else
+      if TXRechnungXMLHelper.SelectAttributeText(node,'schemeID') <> '' then
+      begin
+        _Party.GlobalIdentifierSellerBuyer := node.text;
+        _Party.GlobalIdentifierSellerBuyerSchemeID := TXRechnungXMLHelper.SelectAttributeText(node,'schemeID');
+      end
+      else
+        _Party.IdentifierSellerBuyer := node.text;
     end;
     _Party.Name := TXRechnungXMLHelper.SelectNodeText(_Node,'.//cac:PartyName/cbc:Name');
     _Party.Address.StreetName := TXRechnungXMLHelper.SelectNodeText(_Node,'.//cac:PostalAddress/cbc:StreetName');
@@ -274,11 +298,22 @@ begin
 
     if TXRechnungXMLHelper.SelectNodes(xml,'//cac:AdditionalDocumentReference',nodes) then
     for i := 0  to nodes.length-1 do
+    //BT-11 : in der Gutschrift wird die Projektreferenz als cac:AdditionalDocumentReference mit
+    //DocumentTypeCode 50 abgebildet, ein echter Anhang liegt dort nie vor
+    if (_Invoice.InvoiceTypeCode = itc_CreditNote) and
+       SameText(TXRechnungXMLHelper.SelectNodeText(nodes.item[i],'.//cbc:DocumentTypeCode'),'50') and
+       (not TXRechnungXMLHelper.FindNode(nodes.item[i],'.//cac:Attachment')) then
+    begin
+      _Invoice.ProjectReference := TXRechnungXMLHelper.SelectNodeText(nodes.item[i],'.//cbc:ID');
+    end else
     with _Invoice.Attachments.AddAttachment(iat_application_None) do
     begin
       ID := TXRechnungXMLHelper.SelectNodeText(nodes.item[i],'.//cbc:ID');
       if TXRechnungXMLHelper.SelectNode(nodes.item[i],'.//cbc:DocumentTypeCode',node) then
         TypeCode := TXRechnungHelper.InvoiceAttachmentTypeCodeFromStr(node.text);
+      //BT-18-1
+      if (TypeCode = iatc_130) and TXRechnungXMLHelper.SelectNode(nodes.item[i],'.//cbc:ID',node) then
+        SchemeID := TXRechnungXMLHelper.SelectAttributeText(node,'schemeID');
       DocumentDescription := TXRechnungXMLHelper.SelectNodeText(nodes.item[i],'.//cbc:DocumentDescription');
       if TXRechnungXMLHelper.SelectNode(nodes.item[i],'.//cac:Attachment',node) then
       begin
@@ -292,6 +327,7 @@ begin
         end;
       end;
     end;
+    if (_Invoice.InvoiceTypeCode <> itc_CreditNote) then
     if TXRechnungXMLHelper.SelectNode(xml,'//cac:ProjectReference/cbc:ID',node) then
       _Invoice.ProjectReference := node.Text;
     if TXRechnungXMLHelper.SelectNode(xml,'//cac:AccountingSupplierParty/cac:Party',node) then
@@ -418,6 +454,7 @@ begin
       begin
         TaxAmount := TXRechnungHelper.AmountFromStr(TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//cbc:TaxAmount'));
         TaxExemptionReason := TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//cac:TaxCategory/cbc:TaxExemptionReason');
+        TaxExemptionReasonCode := TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//cac:TaxCategory/cbc:TaxExemptionReasonCode');
         TaxableAmount := TXRechnungHelper.AmountFromStr(TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//cbc:TaxableAmount'));
         TaxCategory := TXRechnungHelper.InvoiceDutyTaxFeeCategoryCodeFromStr(TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//cac:TaxCategory/cbc:ID'));
         TaxPercent := TXRechnungHelper.PercentageFromStr(TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//cac:TaxCategory/cbc:Percent'));
@@ -447,6 +484,113 @@ begin
   end;
 end;
 
+//Unterpositionen aus flach gelesenen Positionen aufbauen. CII (und der Weg ueber die
+//ZUGFeRD-Bibliothek) kennt keine Verschachtelung: jede Unterposition verweist ueber
+//ParentLineID (BT-X-304) auf die LineID ihrer Oberposition. _Lines enthaelt die
+//Positionen in Dokumentreihenfolge (alle zunaechst in _Invoice.InvoiceLines),
+//_ParentLineIDs je Position den Verweis, _NoAmountLines die Positionen ohne BT-131.
+class procedure TXRechnungInvoiceAdapter301.BuildSubInvoiceLines(_Invoice: TInvoice;
+  _Lines: TList; _ParentLineIDs: TStrings; _NoAmountLines: TList);
+var
+  i,j,k : Integer;
+  parentLine : TInvoiceLine;
+  parentLineID : String;
+  childHasCode : Boolean;
+
+  //wie XPath normalize-space(): Leerraum am Rand entfernen, innen auf ein
+  //Leerzeichen zusammenfassen (so vergleichen BR-FXEXT-08 und -11)
+  function InternalNormalizeSpace(const _Val : String) : String;
+  var
+    i : Integer;
+    lastWasSpace : Boolean;
+  begin
+    Result := '';
+    lastWasSpace := false;
+    for i := 1 to Length(_Val) do
+    if (_Val[i] = ' ') or (_Val[i] = #9) or (_Val[i] = #10) or (_Val[i] = #13) then
+      lastWasSpace := true
+    else
+    begin
+      if lastWasSpace and (Result <> '') then
+        Result := Result + ' ';
+      Result := Result + _Val[i];
+      lastWasSpace := false;
+    end;
+  end;
+
+  function InternalContainsLine(_Line, _Candidate : TInvoiceLine) : Boolean;
+  var
+    i : Integer;
+  begin
+    Result := true;
+    for i := 0 to _Line.SubInvoiceLines.Count-1 do
+    if (_Line.SubInvoiceLines[i] = _Candidate) or
+       InternalContainsLine(_Line.SubInvoiceLines[i],_Candidate) then
+      exit;
+    Result := false;
+  end;
+
+  //GROUP ohne BT-131 (erlaubt): die Summe der DETAIL- und GROUP-Unterpositionen
+  //eintragen, genau das verlangt BR-FXEXT-08 - sonst wuerde 0.00 geschrieben
+  function InternalGroupAmount(_Line : TInvoiceLine) : Currency;
+  var
+    i : Integer;
+  begin
+    if (_NoAmountLines.IndexOf(_Line) < 0) or (_Line.LineStatusReasonCode <> ilsrc_Group) then
+    begin
+      Result := _Line.LineAmount;
+      exit;
+    end;
+    Result := 0;
+    for i := 0 to _Line.SubInvoiceLines.Count-1 do
+    if TXRechnungHelper.InvoiceLineStatusReasonCodeOf(_Line.SubInvoiceLines[i],true) in [ilsrc_Detail,ilsrc_Group] then
+      Result := Result + InternalGroupAmount(_Line.SubInvoiceLines[i]);
+  end;
+
+begin
+  //Umhaengen in Dokumentreihenfolge. Bei unbekannter Oberposition oder einem
+  //Zyklus bleibt die Position auf ihrer Ebene. Verglichen wird wie im
+  //Schematron mit normalize-space().
+  for i := 0 to _Lines.Count-1 do
+  begin
+    parentLineID := InternalNormalizeSpace(_ParentLineIDs[i]);
+    if parentLineID = '' then
+      continue;
+    parentLine := nil;
+    for j := 0 to _Lines.Count-1 do
+    if (j <> i) and (InternalNormalizeSpace(TInvoiceLine(_Lines[j]).ID) = parentLineID) then
+    begin
+      parentLine := TInvoiceLine(_Lines[j]);
+      break;
+    end;
+    if (parentLine = nil) or InternalContainsLine(TInvoiceLine(_Lines[i]),parentLine) then
+      continue;
+    _Invoice.InvoiceLines.Extract(TInvoiceLine(_Lines[i]));
+    parentLine.SubInvoiceLines.Add(TInvoiceLine(_Lines[i]));
+  end;
+  //Eine Oberposition ohne BT-X-8 ist laut Schematron eine regulaere Position
+  //(DETAIL) und zaehlt in die Summen. Ohne Code wuerde der Schreibcode sie wegen
+  //ihrer Unterpositionen als GROUP ausgeben und damit umdeuten. Das gilt nur, wenn
+  //die Unterpositionen selbst einen Code tragen (in CII Pflicht, BR-FXEXT-06);
+  //aus UBL stammende Unterpositionen haben keinen, dort zaehlt die Oberposition.
+  for i := 0 to _Lines.Count-1 do
+  if (TInvoiceLine(_Lines[i]).SubInvoiceLines.Count > 0) and
+     (TInvoiceLine(_Lines[i]).LineStatusReasonCode = ilsrc_None) then
+  begin
+    childHasCode := false;
+    for k := 0 to TInvoiceLine(_Lines[i]).SubInvoiceLines.Count-1 do
+    if TInvoiceLine(_Lines[i]).SubInvoiceLines[k].LineStatusReasonCode <> ilsrc_None then
+    begin
+      childHasCode := true;
+      break;
+    end;
+    if childHasCode then
+      TInvoiceLine(_Lines[i]).LineStatusReasonCode := ilsrc_Detail;
+  end;
+  for i := 0 to _NoAmountLines.Count-1 do
+    TInvoiceLine(_NoAmountLines[i]).LineAmount := InternalGroupAmount(TInvoiceLine(_NoAmountLines[i]));
+end;
+
 class function TXRechnungInvoiceAdapter301.LoadDocumentUNCEFACT(_Invoice: TInvoice;
   _Xml: IXMLDocument; out _Error : String) : Boolean;
 var
@@ -455,6 +599,8 @@ var
   nodeApplicableHeaderTradeAgreement : IXMLDOMNode;
   nodes : IXMLDOMNodeList;
   i : Integer;
+  lines,noAmountLines : TList;
+  parentLineIDs : TStringList;
 
   procedure InternalReadInvoiceLine(_Invoiceline : TInvoiceLine; _Node : IXMLDOMNode);
   var
@@ -465,6 +611,7 @@ var
     if TXRechnungXMLHelper.SelectNode(_Node,'.//ram:AssociatedDocumentLineDocument',node2) then
     begin
       _Invoiceline.ID := TXRechnungXMLHelper.SelectNodeText(node2,'.//ram:LineID');
+      _Invoiceline.LineStatusReasonCode := TXRechnungHelper.InvoiceLineStatusReasonCodeFromStr(TXRechnungXMLHelper.SelectNodeText(node2,'ram:LineStatusReasonCode'));
       if TXRechnungXMLHelper.SelectNode(node2,'.//ram:IncludedNote',node) then
         _Invoiceline.Note := TXRechnungXMLHelper.SelectNodeText(node,'.//ram:Content');
     end;
@@ -484,7 +631,18 @@ var
         Name := TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//ram:Description');
         Value := TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//ram:Value');
       end;
-      //DesignatedProductClassification
+      if TXRechnungXMLHelper.SelectNodes(node2,'.//ram:DesignatedProductClassification',nodes) then
+      for i := 0 to nodes.length-1 do
+      with _Invoiceline.ItemClassifications.AddItemClassification do
+      begin
+        if TXRechnungXMLHelper.SelectNode(nodes[i],'.//ram:ClassCode',node3) then
+        begin
+          ClassCode := node3.text;
+          ListID := TXRechnungXMLHelper.SelectAttributeText(node3,'listID');
+          ListVersionID := TXRechnungXMLHelper.SelectAttributeText(node3,'listVersionID');
+        end;
+        ClassificationName := TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//ram:ClassName');
+      end;
       _Invoiceline.OriginTradeCountry := TXRechnungXMLHelper.SelectNodeText(node2,'.//ram:OriginTradeCountry/ram:ID');
     end;
     if TXRechnungXMLHelper.SelectNode(_Node,'.//ram:SpecifiedLineTradeAgreement',node2) then
@@ -507,10 +665,22 @@ var
       end;
     end;
     if TXRechnungXMLHelper.SelectNode(_Node,'.//ram:SpecifiedLineTradeDelivery',node2) then
-    if TXRechnungXMLHelper.SelectNode(node2,'.//ram:BilledQuantity',node) then
     begin
-      _Invoiceline.UnitCode := TXRechnungHelper.InvoiceUnitCodeFromStr(TXRechnungXMLHelper.SelectAttributeText(node,'unitCode'));
-      _Invoiceline.Quantity := TXRechnungHelper.QuantityFromStr(node.text);
+      if TXRechnungXMLHelper.SelectNode(node2,'.//ram:BilledQuantity',node) then
+      begin
+        _Invoiceline.UnitCode := TXRechnungHelper.InvoiceUnitCodeFromStr(TXRechnungXMLHelper.SelectAttributeText(node,'unitCode'));
+        _Invoiceline.Quantity := TXRechnungHelper.QuantityFromStr(node.text);
+      end;
+      //nur EXTENDED, wird aber unabhaengig vom Profil gelesen
+      if TXRechnungXMLHelper.SelectNode(node2,'ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime/udt:DateTimeString',node) then
+        _Invoiceline.ActualDeliveryDate := TXRechnungHelper.DateFromStrUNCEFACTFormat(node.text);
+      if TXRechnungXMLHelper.SelectNode(node2,'ram:DeliveryNoteReferencedDocument',node3) then
+      begin
+        _Invoiceline.DeliveryNoteNumber := TXRechnungXMLHelper.SelectNodeText(node3,'ram:IssuerAssignedID'); //BT-X-92
+        _Invoiceline.DeliveryNoteLineID := TXRechnungXMLHelper.SelectNodeText(node3,'ram:LineID'); //BT-X-93
+        if TXRechnungXMLHelper.SelectNode(node3,'ram:FormattedIssueDateTime/qdt:DateTimeString',node) then
+          _Invoiceline.DeliveryNoteDate := TXRechnungHelper.DateFromStrUNCEFACTFormat(node.text); //BT-X-94
+      end;
     end;
     if TXRechnungXMLHelper.SelectNode(_Node,'.//ram:SpecifiedLineTradeSettlement',node2) then
     begin
@@ -546,11 +716,17 @@ var
       begin
         _Invoiceline.LineAmount := TXRechnungHelper.AmountFromStr(TXRechnungXMLHelper.SelectNodeText(node,'.//ram:LineTotalAmount'));
       end;
+      //BT-128 : nur die Referenz mit dem Code 130 ist die Objektkennung, EXTENDED erlaubt weitere
+      if TXRechnungXMLHelper.SelectNodes(node2,'ram:AdditionalReferencedDocument',nodes) then
+      for i := 0 to nodes.length-1 do
+      if TXRechnungXMLHelper.SelectNodeText(nodes[i],'ram:TypeCode') = '130' then
+      begin
+        _InvoiceLine.ObjectIdentifier := TXRechnungXMLHelper.SelectNodeText(nodes[i],'ram:IssuerAssignedID');
+        _InvoiceLine.ObjectIdentifierSchemeID := TXRechnungXMLHelper.SelectNodeText(nodes[i],'ram:ReferenceTypeCode');
+        break;
+      end;
       _InvoiceLine.BuyerAccountingReference := TXRechnungXMLHelper.SelectNodeText(node2, './/ram:ReceivableSpecifiedTradeAccountingAccount/ram:ID');
     end;
-    if TXRechnungXMLHelper.SelectNodes(_Node,'.//ram:IncludedSupplyChainTradeLineItem',nodes) then
-    for i := 0 to nodes.length-1 do
-      InternalReadInvoiceLine(_InvoiceLine.SubInvoiceLines.AddInvoiceLine,nodes.item[i]);
   end;
 
 begin
@@ -578,8 +754,27 @@ begin
       exit;
 
     if TXRechnungXMLHelper.SelectNodes(xml,'.//*[local-name()="SupplyChainTradeTransaction"]/ram:IncludedSupplyChainTradeLineItem',nodes) then
-    for i := 0 to nodes.length-1 do
-      InternalReadInvoiceLine(_Invoice.InvoiceLines.AddInvoiceLine,nodes[i]);
+    begin
+      lines := TList.Create;
+      noAmountLines := TList.Create;
+      parentLineIDs := TStringList.Create;
+      try
+        for i := 0 to nodes.length-1 do
+        begin
+          lines.Add(_Invoice.InvoiceLines.AddInvoiceLine);
+          InternalReadInvoiceLine(TInvoiceLine(lines[i]),nodes[i]);
+          parentLineIDs.Add(TXRechnungXMLHelper.SelectNodeText(nodes[i],'ram:AssociatedDocumentLineDocument/ram:ParentLineID'));
+          if not TXRechnungXMLHelper.SelectNode(nodes[i],'ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeSettlementLineMonetarySummation/ram:LineTotalAmount',node) then
+            noAmountLines.Add(lines[i]);
+        end;
+        //Unterpositionen (BT-X-304, nur EXTENDED)
+        BuildSubInvoiceLines(_Invoice,lines,parentLineIDs,noAmountLines);
+      finally
+        parentLineIDs.Free;
+        noAmountLines.Free;
+        lines.Free;
+      end;
+    end;
 
     if TXRechnungXMLHelper.SelectNode(nodeSupplyChainTradeTransaction,'.//ram:ApplicableHeaderTradeAgreement',nodeApplicableHeaderTradeAgreement) then
     begin
@@ -736,6 +931,9 @@ begin
           ExternalReference := TXRechnungXMLHelper.SelectNodeText(nodes.item[i],'.//ram:URIID');
         if TXRechnungXMLHelper.FindNode(nodes.item[i],'.//ram:TypeCode') then
           TypeCode := TXRechnungHelper.InvoiceAttachmentTypeCodeFromStr(TXRechnungXMLHelper.SelectNodeText(nodes.item[i],'.//ram:TypeCode'));
+        //BT-18-1
+        if TypeCode = iatc_130 then
+          SchemeID := TXRechnungXMLHelper.SelectNodeText(nodes.item[i],'.//ram:ReferenceTypeCode');
         if TXRechnungXMLHelper.SelectNode(nodes.item[i],'.//ram:AttachmentBinaryObject',node) then
         begin
           AttachmentType := TXRechnungHelper.InvoiceAttachmentTypeFromStr(TXRechnungXMLHelper.SelectAttributeText(node,'mimeCode'));
@@ -843,6 +1041,7 @@ begin
       begin
         TaxAmount := TXRechnungHelper.AmountFromStr(TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//ram:CalculatedAmount'));
         TaxExemptionReason := TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//ram:ExemptionReason');
+        TaxExemptionReasonCode := TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//ram:ExemptionReasonCode');
         TaxableAmount := TXRechnungHelper.AmountFromStr(TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//ram:BasisAmount'));
         TaxCategory := TXRechnungHelper.InvoiceDutyTaxFeeCategoryCodeFromStr(TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//ram:CategoryCode'));
         TaxPercent := TXRechnungHelper.PercentageFromStr(TXRechnungXMLHelper.SelectNodeText(nodes[i],'.//ram:RateApplicablePercent'));
@@ -1035,24 +1234,64 @@ begin
     on E:Exception do _Error := E.ClassName+' '+E.Message;
   end;
 end;
-{$ENDIF}
 
 class procedure TXRechnungInvoiceAdapter301.SaveDocumentUBL(_Invoice: TInvoice;
   _Xml: IXMLDocument; _Profile : TInvoiceProfile);
 var
   xRoot : IXMLNode;
   i : Integer;
+  bBT18Written : Boolean;
 
+  //Die XRechnung-Extension nur deklarieren, wenn die Rechnung tatsaechlich
+  //Extension-Inhalte enthaelt (KoSIT XRechnung 3.0, Kapitel Extension):
+  //Unterpositionen (cac:SubInvoiceLine), eingebettete XML-Anhaenge (BR-DEX-01),
+  //Fremdforderungen (BG-DEX-09, cac:PrepaidPayment) und die Extension-Codes
+  //XR01..XR03 als Kennung. Sonst die Standard-XRechnung - viele Empfaenger
+  //(z.B. die DATEV E-Rechnungsplattform) lehnen die Extension ab.
+  //Bekannte Unschaerfe: XML-Anhaenge, die der Writer weiter unten ueberspringt
+  //(iatc_50, iatc_130 ohne ID bzw. nach BT-18), zaehlen hier trotzdem.
   function InternalExtensionEnabled : Boolean;
+
+    function IsExtensionSchemeID(const _SchemeID : String) : Boolean;
+    begin
+      Result := SameText(_SchemeID,'XR01') or SameText(_SchemeID,'XR02') or SameText(_SchemeID,'XR03');
+    end;
+
+  var
+    i : Integer;
   begin
+    //KoSIT kennt kein Extension-Szenario fuer die UBL-Gutschrift (CreditNote):
+    //Gutschriften werden wie bisher nie als Extension deklariert.
     Result := false;
     if _Invoice.InvoiceTypeCode = itc_CreditNote then
       exit;
-    if _Invoice.InvoiceLines.Count > 0 then
-    begin
-      Result := true;
+    Result := true;
+    for i := 0 to _Invoice.InvoiceLines.Count-1 do
+    if _Invoice.InvoiceLines[i].SubInvoiceLines.Count > 0 then
       exit;
-    end;
+    for i := 0 to _Invoice.Attachments.Count-1 do
+    if _Invoice.Attachments[i].ContainsBinaryObject and
+       (_Invoice.Attachments[i].AttachmentType = iat_application_xml) then
+      exit;
+    if _Invoice.PrepaidPayments.Count > 0 then
+      exit;
+    if (_Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyer <> '') and
+       IsExtensionSchemeID(_Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyerSchemeID) then
+      exit;
+    if (_Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyer <> '') and
+       IsExtensionSchemeID(_Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyerSchemeID) then
+      exit;
+    //XR-Codes auch als Kennung von Verkaeufer/Kaeufer (BT-29/BT-46) und Lieferort (BT-71)
+    if (_Invoice.AccountingSupplierParty.GlobalIdentifierSellerBuyer <> '') and
+       IsExtensionSchemeID(_Invoice.AccountingSupplierParty.GlobalIdentifierSellerBuyerSchemeID) then
+      exit;
+    if (_Invoice.AccountingCustomerParty.GlobalIdentifierSellerBuyer <> '') and
+       IsExtensionSchemeID(_Invoice.AccountingCustomerParty.GlobalIdentifierSellerBuyerSchemeID) then
+      exit;
+    if (_Invoice.DeliveryInformation.LocationIdentifier <> '') and
+       IsExtensionSchemeID(_Invoice.DeliveryInformation.LocationIdentifierSchemeID) then
+      exit;
+    Result := false;
   end;
 
   procedure InternalAddInvoiceLine(_Invoiceline : TInvoiceLine; _Node : IXMLNode);
@@ -1074,27 +1313,45 @@ var
     end;
     if (_InvoiceLine.BuyerAccountingReference <> '') then
       _Node.AddChild('cbc:AccountingCost').Text := _InvoiceLine.BuyerAccountingReference;
-    if (_Invoiceline.InvoiceLinePeriodStartDate > 100) and
-       (_Invoiceline.InvoiceLinePeriodEndDate >= _Invoiceline.InvoiceLinePeriodStartDate) then
+    if ((_Invoiceline.InvoiceLinePeriodStartDate > 100) or
+       (_Invoiceline.InvoiceLinePeriodEndDate > 100)) and
+       (
+         (_Invoiceline.InvoiceLinePeriodStartDate <= 100) or
+         (_Invoiceline.InvoiceLinePeriodEndDate <= 100) or
+         (_Invoiceline.InvoiceLinePeriodEndDate >= _Invoiceline.InvoiceLinePeriodStartDate)
+       ) then
     with _Node.AddChild('cac:InvoicePeriod') do
     begin
-      AddChild('cbc:StartDate').Text := TXRechnungHelper.DateToStrUBLFormat(_Invoiceline.InvoiceLinePeriodStartDate);
-      AddChild('cbc:EndDate').Text := TXRechnungHelper.DateToStrUBLFormat(_Invoiceline.InvoiceLinePeriodEndDate);
+      if (_Invoiceline.InvoiceLinePeriodStartDate > 100) then
+        AddChild('cbc:StartDate').Text := TXRechnungHelper.DateToStrUBLFormat(_Invoiceline.InvoiceLinePeriodStartDate);
+      if (_Invoiceline.InvoiceLinePeriodEndDate > 100) then
+        AddChild('cbc:EndDate').Text := TXRechnungHelper.DateToStrUBLFormat(_Invoiceline.InvoiceLinePeriodEndDate);
     end;
     if (_InvoiceLine.OrderLineReference <> '') then
       _Node.AddChild('cac:OrderLineReference').AddChild('cbc:LineID').Text := _InvoiceLine.OrderLineReference;
-    //  <cac:DocumentReference>
-    //     <cbc:ID/>
-    //     <cbc:DocumentType>916</cbc:DocumentType>
-    //  </cac:DocumentReference>
+    if (_InvoiceLine.ObjectIdentifier <> '') then //BT-128
+    with _Node.AddChild('cac:DocumentReference') do
+    begin
+      with AddChild('cbc:ID') do
+      begin
+        if (_InvoiceLine.ObjectIdentifierSchemeID <> '') then
+          Attributes['schemeID'] := _InvoiceLine.ObjectIdentifierSchemeID;
+        Text := _InvoiceLine.ObjectIdentifier;
+      end;
+      AddChild('cbc:DocumentTypeCode').Text := '130';
+    end;
     for i := 0 to _Invoiceline.AllowanceCharges.Count-1 do
     with _Node.AddChild('cac:AllowanceCharge') do
     begin
       AddChild('cbc:ChargeIndicator').Text := LowerCase(BoolToStr(_Invoiceline.AllowanceCharges[i].ChargeIndicator,true));
-      AddChild('cbc:AllowanceChargeReasonCode').Text :=
-               IfThen(_Invoiceline.AllowanceCharges[i].ChargeIndicator,
-               TXRechnungHelper.InvoiceSpecialServiceDescriptionCodeToStr(_Invoiceline.AllowanceCharges[i].ReasonCodeCharge),
-               TXRechnungHelper.InvoiceAllowanceOrChargeIdentCodeToStr(_Invoiceline.AllowanceCharges[i].ReasonCodeAllowance));
+      //Ohne Grundcode bleibt das Element weg - ein leeres Element wird beanstandet
+      if _Invoiceline.AllowanceCharges[i].ChargeIndicator then
+      begin
+        if _Invoiceline.AllowanceCharges[i].ReasonCodeCharge <> issdc_None then
+          AddChild('cbc:AllowanceChargeReasonCode').Text := TXRechnungHelper.InvoiceSpecialServiceDescriptionCodeToStr(_Invoiceline.AllowanceCharges[i].ReasonCodeCharge);
+      end else
+      if _Invoiceline.AllowanceCharges[i].ReasonCodeAllowance <> iacic_None then
+        AddChild('cbc:AllowanceChargeReasonCode').Text := TXRechnungHelper.InvoiceAllowanceOrChargeIdentCodeToStr(_Invoiceline.AllowanceCharges[i].ReasonCodeAllowance);
       if not (_Invoiceline.AllowanceCharges[i].Reason = '') then
         AddChild('cbc:AllowanceChargeReason').Text := _Invoiceline.AllowanceCharges[i].Reason;
       if _Invoiceline.AllowanceCharges[i].MultiplierFactorNumeric <> 0 then
@@ -1128,10 +1385,21 @@ var
       end;
       if _Invoiceline.OriginTradeCountry <> '' then
         AddChild('cac:OriginCountry').AddChild('cbc:IdentificationCode').Text := _Invoiceline.OriginTradeCountry;
+      for i := 0 to _Invoiceline.ItemClassifications.Count-1 do
+      if (_Invoiceline.ItemClassifications[i].ClassCode <> '') and
+         (_Invoiceline.ItemClassifications[i].ListID <> '') then //BR-65 listID ist Pflicht
+      with AddChild('cac:CommodityClassification').AddChild('cbc:ItemClassificationCode') do
+      begin
+        Attributes['listID'] := _Invoiceline.ItemClassifications[i].ListID;
+        if _Invoiceline.ItemClassifications[i].ListVersionID <> '' then
+          Attributes['listVersionID'] := _Invoiceline.ItemClassifications[i].ListVersionID;
+        Text := _Invoiceline.ItemClassifications[i].ClassCode;
+      end;
       with AddChild('cac:ClassifiedTaxCategory') do
       begin
         AddChild('cbc:ID').Text := TXRechnungHelper.InvoiceDutyTaxFeeCategoryCodeToStr(_Invoiceline.TaxCategory);
-        AddChild('cbc:Percent').Text := TXRechnungHelper.PercentageToStr(_Invoiceline.TaxPercent);
+        if (_Invoiceline.TaxCategory <> idtfcc_O_ServicesOutsideScopeOfTax) then //BR-O-05
+          AddChild('cbc:Percent').Text := TXRechnungHelper.PercentageToStr(_Invoiceline.TaxPercent);
         AddChild('cac:TaxScheme').AddChild('cbc:ID').Text := 'VAT';
       end;
       for i := 0 to _Invoiceline.ItemAttributes.Count-1 do
@@ -1152,7 +1420,7 @@ var
       with AddChild('cbc:BaseQuantity') do
       begin
         Attributes['unitCode'] := TXRechnungHelper.InvoiceUnitCodeToStr(_Invoiceline.BaseQuantityUnitCode);
-        Text := TXRechnungHelper.FloatToStr(_Invoiceline.BaseQuantity);
+        Text := TXRechnungHelper.BaseQuantityToStr(_Invoiceline.BaseQuantity);
       end;
       if (_Invoiceline.GrossPriceAmount <> 0) then
       with AddChild('cac:AllowanceCharge') do
@@ -1225,11 +1493,19 @@ begin
   if _Invoice.BuyerAccountingReference <> '' then
     xRoot.AddChild('cbc:AccountingCost').Text := _Invoice.BuyerAccountingReference;
   xRoot.AddChild('cbc:BuyerReference').Text := _Invoice.BuyerReference;
-  if (_Invoice.InvoicePeriodStartDate > 100) and (_Invoice.InvoicePeriodEndDate >= _Invoice.InvoicePeriodStartDate) then
+  if ((_Invoice.InvoicePeriodStartDate > 100) or
+     (_Invoice.InvoicePeriodEndDate > 100)) and
+     (
+       (_Invoice.InvoicePeriodStartDate <= 100) or
+       (_Invoice.InvoicePeriodEndDate <= 100) or
+       (_Invoice.InvoicePeriodEndDate >= _Invoice.InvoicePeriodStartDate)
+     ) then
   with xRoot.AddChild('cac:InvoicePeriod') do
   begin
-    AddChild('cbc:StartDate').Text := TXRechnungHelper.DateToStrUBLFormat(_Invoice.InvoicePeriodStartDate);
-    AddChild('cbc:EndDate').Text := TXRechnungHelper.DateToStrUBLFormat(_Invoice.InvoicePeriodEndDate);
+    if (_Invoice.InvoicePeriodStartDate > 100) then
+      AddChild('cbc:StartDate').Text := TXRechnungHelper.DateToStrUBLFormat(_Invoice.InvoicePeriodStartDate);
+    if (_Invoice.InvoicePeriodEndDate > 100) then
+      AddChild('cbc:EndDate').Text := TXRechnungHelper.DateToStrUBLFormat(_Invoice.InvoicePeriodEndDate);
   end;
   if (_Invoice.PurchaseOrderReference <> '') or
      (_Invoice.SellerOrderReference <> '') then
@@ -1254,20 +1530,47 @@ begin
   if _Invoice.ReceiptDocumentReference <> '' then
     xRoot.AddChild('cac:ReceiptDocumentReference').AddChild('cbc:ID').Text := _Invoice.ReceiptDocumentReference;
 
+  //BT-17 steht in der Rechnung vor cac:ContractDocumentReference,
+  //in der Gutschrift dagegen erst hinter cac:AdditionalDocumentReference (siehe UBL-CreditNote-2.1.xsd)
+  if (_Invoice.InvoiceTypeCode <> itc_CreditNote) then
   for i := 0 to _Invoice.Attachments.Count -1 do
   if (_Invoice.Attachments[i].TypeCode = iatc_50) then //BT-17
   if (_Invoice.Attachments[i].ID <> '') then
+  begin
     xRoot.AddChild('cac:OriginatorDocumentReference').AddChild('cbc:ID').Text := _Invoice.Attachments[i].ID;
+    break; //BT-17 ist nur einmal zulaessig, weitere Attachments mit iatc_50 werden verworfen
+  end;
 
   if _Invoice.ContractDocumentReference <> '' then
     xRoot.AddChild('cac:ContractDocumentReference').AddChild('cbc:ID').Text := _Invoice.ContractDocumentReference;
 
+  if (_Invoice.ProjectReference <> '') and (_Invoice.InvoiceTypeCode = itc_CreditNote) then
+  with xRoot.AddChild('cac:AdditionalDocumentReference') do
+  begin
+    AddChild('cbc:ID').Text := _Invoice.ProjectReference;
+    AddChild('cbc:DocumentTypeCode').Text := TXRechnungHelper.InvoiceAttachmentTypeCodeToStr(iatc_50);
+  end;
+
+  bBT18Written := false;
   for i := 0 to _Invoice.Attachments.Count -1 do
   if (_Invoice.Attachments[i].TypeCode <> iatc_50) then //BT-17 extra
   begin
+    //BT-18 ist nur einmal zulaessig (UBL-SR-04), weitere Attachments mit iatc_130 werden verworfen
+    if (_Invoice.Attachments[i].TypeCode = iatc_130) then
+    begin
+      if bBT18Written or (_Invoice.Attachments[i].ID = '') then
+        Continue;
+      bBT18Written := true;
+    end;
     with xRoot.AddChild('cac:AdditionalDocumentReference') do
     begin
-      AddChild('cbc:ID').Text := _Invoice.Attachments[i].ID;
+      with AddChild('cbc:ID') do
+      begin
+        //BT-18-1
+        if (_Invoice.Attachments[i].TypeCode = iatc_130) and (_Invoice.Attachments[i].SchemeID <> '') then
+          Attributes['schemeID'] := _Invoice.Attachments[i].SchemeID;
+        Text := _Invoice.Attachments[i].ID;
+      end;
       if (_Invoice.Attachments[i].TypeCode in [iatc_130{,iatc_916}]) then //916 gibt derzeit Fehler bei UBL, ggf. spaeter wieder aktivieren
         AddChild('cbc:DocumentTypeCode').Text := TXRechnungHelper.InvoiceAttachmentTypeCodeToStr(_Invoice.Attachments[i].TypeCode);
       if _Invoice.Attachments[i].DocumentDescription <> '' then
@@ -1289,7 +1592,17 @@ begin
     end;
   end;
 
-  if _Invoice.ProjectReference <> '' then
+  if (_Invoice.InvoiceTypeCode = itc_CreditNote) then
+  for i := 0 to _Invoice.Attachments.Count -1 do
+  if (_Invoice.Attachments[i].TypeCode = iatc_50) then //BT-17
+  if (_Invoice.Attachments[i].ID <> '') then
+  begin
+    xRoot.AddChild('cac:OriginatorDocumentReference').AddChild('cbc:ID').Text := _Invoice.Attachments[i].ID;
+    break; //BT-17 ist nur einmal zulaessig, weitere Attachments mit iatc_50 werden verworfen
+  end;
+
+  //BT-11 : die Gutschrift kennt kein cac:ProjectReference, dort oben als cac:AdditionalDocumentReference ausgegeben
+  if (_Invoice.ProjectReference <> '') and (_Invoice.InvoiceTypeCode <> itc_CreditNote) then
     xRoot.AddChild('cac:ProjectReference').AddChild('cbc:ID').Text := _Invoice.ProjectReference;
 
   with xRoot.AddChild('cac:AccountingSupplierParty').AddChild('cac:Party') do
@@ -1297,15 +1610,26 @@ begin
     if _Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyer <> '' then
     with AddChild('cbc:EndpointID') do
     begin
+      //unter Peppol kein 'EM'-Default, dort ist eine Kennung aus der EAS-Codeliste Pflicht
+      if (_Profile <> ipPeppol) or (_Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyerSchemeID <> '') then
       Attributes['schemeID'] := ifthen(_Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyerSchemeID='','EM',_Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyerSchemeID);
       Text := _Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyer;
     end;
-    if _Invoice.AccountingSupplierParty.IdentifierSellerBuyer <> '' then
+    //BT-29 ist semantisch zwar 0..n, das UBL-Syntaxbinding sieht unter BG-4-0 aber nur eine
+    //cac:PartyIdentification vor (VD-Valitool-23) - die GlobalID (z.B. GLN) hat daher Vorrang
+    //vor der Verkaeuferkennung, die Kennung selbst wird ohne schemeID ausgegeben, sie ist keine GLN.
+    //Die Glaeubiger-ID (BT-90) wird zusaetzlich geschrieben, sie hat in UBL keine andere Abbildung.
+    //KoSIT prueft sie ueber schemeID SEPA getrennt, valitool.org zaehlt sie dagegen mit und
+    //meldet in dieser Kombination VD-Valitool-23 - das ist so hingenommen.
+    if _Invoice.AccountingSupplierParty.GlobalIdentifierSellerBuyer <> '' then
     with AddChild('cac:PartyIdentification').AddChild('cbc:ID') do
     begin
-      Attributes['schemeID'] := '0088';
-      Text := _Invoice.AccountingSupplierParty.IdentifierSellerBuyer;
-    end;
+      Attributes['schemeID'] := IfThen(_Invoice.AccountingSupplierParty.GlobalIdentifierSellerBuyerSchemeID = '','0088',_Invoice.AccountingSupplierParty.GlobalIdentifierSellerBuyerSchemeID);
+      Text := _Invoice.AccountingSupplierParty.GlobalIdentifierSellerBuyer;
+    end
+    else
+    if _Invoice.AccountingSupplierParty.IdentifierSellerBuyer <> '' then
+      AddChild('cac:PartyIdentification').AddChild('cbc:ID').Text := _Invoice.AccountingSupplierParty.IdentifierSellerBuyer;
     if _Invoice.AccountingSupplierParty.BankAssignedCreditorIdentifier <> '' then
     with AddChild('cac:PartyIdentification').AddChild('cbc:ID') do
     begin
@@ -1364,15 +1688,22 @@ begin
     if _Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyer <> '' then
     with AddChild('cbc:EndpointID') do
     begin
+      //unter Peppol kein 'EM'-Default, dort ist eine Kennung aus der EAS-Codeliste Pflicht
+      if (_Profile <> ipPeppol) or (_Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyerSchemeID <> '') then
       Attributes['schemeID'] := ifthen(_Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyerSchemeID='','EM',_Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyerSchemeID);
       Text := _Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyer;
     end;
-    if _Invoice.AccountingCustomerParty.IdentifierSellerBuyer <> '' then
+    //BT-46 ist in UBL max. einmal erlaubt (UBL-SR-16) - GlobalID (z.B. GLN) hat Vorrang
+    //vor der Kaeuferkennung; Kennung ohne GlobalID ohne schemeID (die Kennung ist keine GLN)
+    if _Invoice.AccountingCustomerParty.GlobalIdentifierSellerBuyer <> '' then
     with AddChild('cac:PartyIdentification').AddChild('cbc:ID') do
     begin
-      Attributes['schemeID'] := '0088';
-      Text := _Invoice.AccountingCustomerParty.IdentifierSellerBuyer;
-    end;
+      Attributes['schemeID'] := IfThen(_Invoice.AccountingCustomerParty.GlobalIdentifierSellerBuyerSchemeID = '','0088',_Invoice.AccountingCustomerParty.GlobalIdentifierSellerBuyerSchemeID);
+      Text := _Invoice.AccountingCustomerParty.GlobalIdentifierSellerBuyer;
+    end
+    else
+    if _Invoice.AccountingCustomerParty.IdentifierSellerBuyer <> '' then
+      AddChild('cac:PartyIdentification').AddChild('cbc:ID').Text := _Invoice.AccountingCustomerParty.IdentifierSellerBuyer;
     if _Invoice.AccountingCustomerParty.Name <> '' then
     with AddChild('cac:PartyName') do
     begin
@@ -1605,10 +1936,14 @@ begin
   with xRoot.AddChild('cac:AllowanceCharge') do
   begin
     AddChild('cbc:ChargeIndicator').Text := LowerCase(BoolToStr(_Invoice.AllowanceCharges[i].ChargeIndicator,true));
-    AddChild('cbc:AllowanceChargeReasonCode').Text :=
-             IfThen(_Invoice.AllowanceCharges[i].ChargeIndicator,
-             TXRechnungHelper.InvoiceSpecialServiceDescriptionCodeToStr(_Invoice.AllowanceCharges[i].ReasonCodeCharge),
-             TXRechnungHelper.InvoiceAllowanceOrChargeIdentCodeToStr(_Invoice.AllowanceCharges[i].ReasonCodeAllowance));
+    //Ohne Grundcode bleibt das Element weg - ein leeres Element wird beanstandet
+    if _Invoice.AllowanceCharges[i].ChargeIndicator then
+    begin
+      if _Invoice.AllowanceCharges[i].ReasonCodeCharge <> issdc_None then
+        AddChild('cbc:AllowanceChargeReasonCode').Text := TXRechnungHelper.InvoiceSpecialServiceDescriptionCodeToStr(_Invoice.AllowanceCharges[i].ReasonCodeCharge);
+    end else
+    if _Invoice.AllowanceCharges[i].ReasonCodeAllowance <> iacic_None then
+      AddChild('cbc:AllowanceChargeReasonCode').Text := TXRechnungHelper.InvoiceAllowanceOrChargeIdentCodeToStr(_Invoice.AllowanceCharges[i].ReasonCodeAllowance);
     if not (_Invoice.AllowanceCharges[i].Reason = '') then
       AddChild('cbc:AllowanceChargeReason').Text := _Invoice.AllowanceCharges[i].Reason;
     if _Invoice.AllowanceCharges[i].MultiplierFactorNumeric <> 0 then
@@ -1627,7 +1962,8 @@ begin
     with AddChild('cac:TaxCategory') do
     begin
       AddChild('cbc:ID').Text := TXRechnungHelper.InvoiceDutyTaxFeeCategoryCodeToStr(_Invoice.AllowanceCharges[i].TaxCategory);
-      AddChild('cbc:Percent').Text := TXRechnungHelper.PercentageToStr(_Invoice.AllowanceCharges[i].TaxPercent);
+      if (_Invoice.AllowanceCharges[i].TaxCategory <> idtfcc_O_ServicesOutsideScopeOfTax) then //BR-O-06/07
+        AddChild('cbc:Percent').Text := TXRechnungHelper.PercentageToStr(_Invoice.AllowanceCharges[i].TaxPercent);
       AddChild('cac:TaxScheme').AddChild('cbc:ID').Text := 'VAT';
     end;
   end;
@@ -1655,7 +1991,10 @@ begin
       with AddChild('cac:TaxCategory') do
       begin
         AddChild('cbc:ID').Text := TXRechnungHelper.InvoiceDutyTaxFeeCategoryCodeToStr(_Invoice.TaxAmountSubtotals[i].TaxCategory);
+        //BT-119 auch bei O (BR-DE-14), nur Zeilen und Nachlaesse ohne Satz (BR-O-05..07)
         AddChild('cbc:Percent').Text := TXRechnungHelper.PercentageToStr(_Invoice.TaxAmountSubtotals[i].TaxPercent);
+        if _Invoice.TaxAmountSubtotals[i].TaxExemptionReasonCode <> '' then
+          AddChild('cbc:TaxExemptionReasonCode').Text := _Invoice.TaxAmountSubtotals[i].TaxExemptionReasonCode;
         if _Invoice.TaxAmountSubtotals[i].TaxExemptionReason <> '' then
           AddChild('cbc:TaxExemptionReason').Text := _Invoice.TaxAmountSubtotals[i].TaxExemptionReason;
         AddChild('cac:TaxScheme').AddChild('cbc:ID').Text := 'VAT';
@@ -1690,6 +2029,8 @@ begin
         Attributes['currencyID'] := _Invoice.TaxCurrencyCode;
         Text := TXRechnungHelper.AmountToStr(_Invoice.ChargeTotalAmount);
       end;
+      //BT-113 ist optional; 0.00 wuerde von Empfaengern als Vorauszahlung angezeigt
+      if _Invoice.PrepaidAmount <> 0.0 then
       with AddChild('cbc:PrepaidAmount') do
       begin
         Attributes['currencyID'] := _Invoice.TaxCurrencyCode;
@@ -1715,20 +2056,39 @@ end;
 class procedure TXRechnungInvoiceAdapter301.SaveDocumentUNCEFACT(
   _Invoice: TInvoice; _Xml: IXMLDocument; _Profile : TInvoiceProfile);
 var
-  xRoot : IXMLNode;
+  xRoot,xTransaction : IXMLNode;
   i : Integer;
   iPaymentTermsType : TInvoicePaymentTermsType;
   lDays : Integer;
   lSkonto : double;
   lBasisAmount,lActualDiscountAmount : Currency;
+  bBT17Written,bBT18Written : Boolean;
 
-  procedure InternalAddInvoiceLine(_Invoiceline : TInvoiceLine; _Node : IXMLNode);
+  procedure InternalAddInvoiceLine(_Invoiceline : TInvoiceLine; _TransactionNode : IXMLNode; const _ParentLineID : String);
   var
     i : Integer;
+    _Node : IXMLNode;
+    lLineStatusReasonCode : TInvoiceLineStatusReasonCode;
   begin
+    //Unterpositionen gibt es in CII nur im Profil EXTENDED (BT-X-304, BT-X-8),
+    //EN16931 und XRechnung CII kennen sie nicht
+    if (_Invoiceline.SubInvoiceLines.Count > 0) and (_Profile <> ipZUGFeRDExtended) then
+      raise Exception.Create('SubInvoiceLines in UNCEFACT only supported with ZUGFeRD EXTENDED');
+    lLineStatusReasonCode := TXRechnungHelper.InvoiceLineStatusReasonCodeOf(_Invoiceline,_ParentLineID <> '');
+    _Node := _TransactionNode.AddChild('ram:IncludedSupplyChainTradeLineItem');
     with _Node.AddChild('ram:AssociatedDocumentLineDocument') do
     begin
       AddChild('ram:LineID').Text := _Invoiceline.ID;
+      //CII schachtelt nicht: die Unterposition verweist auf ihre Oberposition,
+      //der Untertyp (BT-X-8) kommt aus dem Feld oder wird aus der Struktur
+      //abgeleitet. Nur DETAIL-Positionen zaehlen in BT-106.
+      if (_Profile = ipZUGFeRDExtended) then
+      begin
+        if (_ParentLineID <> '') then
+          AddChild('ram:ParentLineID').Text := _ParentLineID;
+        if (lLineStatusReasonCode <> ilsrc_None) then
+          AddChild('ram:LineStatusReasonCode').Text := TXRechnungHelper.InvoiceLineStatusReasonCodeToStr(lLineStatusReasonCode);
+      end;
       if _Invoiceline.Note <> '' then
         AddChild('ram:IncludedNote').AddChild('ram:Content').Text := _Invoiceline.Note;
     end;
@@ -1757,6 +2117,22 @@ var
         if _Invoiceline.ItemAttributes[i].Value <> '' then
           AddChild('ram:Value').Text := _Invoiceline.ItemAttributes[i].Value;
       end;
+      for i := 0 to _Invoiceline.ItemClassifications.Count-1 do
+      if (_Invoiceline.ItemClassifications[i].ClassCode <> '') and
+         (_Invoiceline.ItemClassifications[i].ListID <> '') then //BR-65 listID ist Pflicht
+      with AddChild('ram:DesignatedProductClassification') do
+      begin
+        with AddChild('ram:ClassCode') do
+        begin
+          Attributes['listID'] := _Invoiceline.ItemClassifications[i].ListID;
+          if _Invoiceline.ItemClassifications[i].ListVersionID <> '' then
+            Attributes['listVersionID'] := _Invoiceline.ItemClassifications[i].ListVersionID;
+          Text := _Invoiceline.ItemClassifications[i].ClassCode;
+        end;
+        //ram:ClassName ist nur im Profil EXTENDED zulaessig
+        if (_Profile = ipZUGFeRDExtended) and (_Invoiceline.ItemClassifications[i].ClassificationName <> '') then
+          AddChild('ram:ClassName').Text := _Invoiceline.ItemClassifications[i].ClassificationName;
+      end;
       if _Invoiceline.OriginTradeCountry <> '' then
         AddChild('ram:OriginTradeCountry').AddChild('ram:ID').Text := _Invoiceline.OriginTradeCountry;
     end;
@@ -1780,7 +2156,7 @@ var
         with AddChild('ram:BasisQuantity') do
         begin
           Attributes['unitCode'] := TXRechnungHelper.InvoiceUnitCodeToStr(_Invoiceline.BaseQuantityUnitCode);
-          Text := TXRechnungHelper.FloatToStr(_Invoiceline.BaseQuantity);
+          Text := TXRechnungHelper.BaseQuantityToStr(_Invoiceline.BaseQuantity);
         end;
         with AddChild('ram:AppliedTradeAllowanceCharge') do //auch wenn DiscountOnTheGrossPrice 0 ist ausgeben
         begin
@@ -1797,17 +2173,52 @@ var
         with AddChild('ram:BasisQuantity') do
         begin
           Attributes['unitCode'] := TXRechnungHelper.InvoiceUnitCodeToStr(_Invoiceline.BaseQuantityUnitCode);
-          Text := TXRechnungHelper.FloatToStr(_Invoiceline.BaseQuantity);
+          Text := TXRechnungHelper.BaseQuantityToStr(_Invoiceline.BaseQuantity);
         end;
       end;
     end;
-    with _Node.AddChild('ram:SpecifiedLineTradeDelivery').AddChild('ram:BilledQuantity') do
+    with _Node.AddChild('ram:SpecifiedLineTradeDelivery') do
     begin
-      Attributes['unitCode'] := TXRechnungHelper.InvoiceUnitCodeToStr(_Invoiceline.UnitCode);
-      Text := TXRechnungHelper.QuantityToStr(_Invoiceline.Quantity);
+      with AddChild('ram:BilledQuantity') do
+      begin
+        Attributes['unitCode'] := TXRechnungHelper.InvoiceUnitCodeToStr(_Invoiceline.UnitCode);
+        Text := TXRechnungHelper.QuantityToStr(_Invoiceline.Quantity);
+      end;
+      //Lieferangaben je Position gibt es nur im Profil EXTENDED, Reihenfolge laut XSD:
+      //ActualDeliverySupplyChainEvent vor DeliveryNoteReferencedDocument
+      if (_Profile = ipZUGFeRDExtended) then
+      begin
+        if (_Invoiceline.ActualDeliveryDate > 0) then
+        with AddChild('ram:ActualDeliverySupplyChainEvent')
+             .AddChild('ram:OccurrenceDateTime')
+             .AddChild('udt:DateTimeString') do
+        begin
+          Attributes['format'] := '102';
+          Text := TXRechnungHelper.DateToStrUNCEFACTFormat(_Invoiceline.ActualDeliveryDate);
+        end;
+        if (_Invoiceline.DeliveryNoteNumber <> '') then //BT-X-92
+        with AddChild('ram:DeliveryNoteReferencedDocument') do
+        begin
+          AddChild('ram:IssuerAssignedID').Text := _Invoiceline.DeliveryNoteNumber;
+          if (_Invoiceline.DeliveryNoteLineID <> '') then //BT-X-93
+            AddChild('ram:LineID').Text := _Invoiceline.DeliveryNoteLineID;
+          if (_Invoiceline.DeliveryNoteDate > 0) then //BT-X-94
+          with AddChild('ram:FormattedIssueDateTime').AddChild('qdt:DateTimeString') do
+          begin
+            Attributes['format'] := '102';
+            Text := TXRechnungHelper.DateToStrUNCEFACTFormat(_Invoiceline.DeliveryNoteDate);
+          end;
+        end;
+      end;
     end;
     with _Node.AddChild('ram:SpecifiedLineTradeSettlement') do
     begin
+      //Zwischensummen (GROUP) und Informationen (INFORMATION) duerfen in EXTENDED
+      //ohne Steuerkategorie bleiben (BR-FXEXT-CO-04 gilt nur fuer DETAIL),
+      //ein leeres ram:CategoryCode waere ungueltig
+      if not ((_Profile = ipZUGFeRDExtended) and
+              (lLineStatusReasonCode in [ilsrc_Group,ilsrc_Information]) and
+              (_Invoiceline.TaxCategory = idtfcc_None)) then
       with AddChild('ram:ApplicableTradeTax') do
       begin
         AddChild('ram:TypeCode').Text := 'VAT';
@@ -1818,14 +2229,22 @@ var
         if ( _Invoiceline.TaxCategory <> idtfcc_O_ServicesOutsideScopeOfTax) then
           AddChild('ram:RateApplicablePercent').Text := TXRechnungHelper.PercentageToStr(_Invoiceline.TaxPercent);
       end;
-      if (_Invoiceline.InvoiceLinePeriodStartDate > 100) and (_Invoiceline.InvoiceLinePeriodEndDate >= _Invoiceline.InvoiceLinePeriodStartDate) then
+      if ((_Invoiceline.InvoiceLinePeriodStartDate > 100) or
+         (_Invoiceline.InvoiceLinePeriodEndDate > 100)) and
+         (
+           (_Invoiceline.InvoiceLinePeriodStartDate <= 100) or
+           (_Invoiceline.InvoiceLinePeriodEndDate <= 100) or
+           (_Invoiceline.InvoiceLinePeriodEndDate >= _Invoiceline.InvoiceLinePeriodStartDate)
+         ) then
       with AddChild('ram:BillingSpecifiedPeriod') do
       begin
+        if (_Invoiceline.InvoiceLinePeriodStartDate > 100) then
         with AddChild('ram:StartDateTime').AddChild('udt:DateTimeString') do
         begin
           Attributes['format'] := '102';
           Text := TXRechnungHelper.DateToStrUNCEFACTFormat(_Invoiceline.InvoiceLinePeriodStartDate);
         end;
+        if (_Invoiceline.InvoiceLinePeriodEndDate > 100) then
         with AddChild('ram:EndDateTime').AddChild('udt:DateTimeString') do
         begin
           Attributes['format'] := '102';
@@ -1843,10 +2262,14 @@ var
           AddChild('ram:BasisAmount').Text := TXRechnungHelper.AmountToStr(_Invoiceline.AllowanceCharges[i].BaseAmount);
         end;
         AddChild('ram:ActualAmount').Text := TXRechnungHelper.AmountToStr(_Invoiceline.AllowanceCharges[i].Amount);
-        AddChild('ram:ReasonCode').Text :=
-                 IfThen(_Invoiceline.AllowanceCharges[i].ChargeIndicator,
-                 TXRechnungHelper.InvoiceSpecialServiceDescriptionCodeToStr(_Invoiceline.AllowanceCharges[i].ReasonCodeCharge),
-                 TXRechnungHelper.InvoiceAllowanceOrChargeIdentCodeToStr(_Invoiceline.AllowanceCharges[i].ReasonCodeAllowance));
+        //Ohne Grundcode bleibt das Element weg - ein leeres Element wird beanstandet
+        if _Invoiceline.AllowanceCharges[i].ChargeIndicator then
+        begin
+          if _Invoiceline.AllowanceCharges[i].ReasonCodeCharge <> issdc_None then
+            AddChild('ram:ReasonCode').Text := TXRechnungHelper.InvoiceSpecialServiceDescriptionCodeToStr(_Invoiceline.AllowanceCharges[i].ReasonCodeCharge);
+        end else
+        if _Invoiceline.AllowanceCharges[i].ReasonCodeAllowance <> iacic_None then
+          AddChild('ram:ReasonCode').Text := TXRechnungHelper.InvoiceAllowanceOrChargeIdentCodeToStr(_Invoiceline.AllowanceCharges[i].ReasonCodeAllowance);
         if not (_Invoiceline.AllowanceCharges[i].Reason = '') then
           AddChild('ram:Reason').Text := _Invoiceline.AllowanceCharges[i].Reason;
       end;
@@ -1854,11 +2277,19 @@ var
       begin
         AddChild('ram:LineTotalAmount').Text := TXRechnungHelper.AmountToStr(_Invoiceline.LineAmount);
       end;
+      if (_InvoiceLine.ObjectIdentifier <> '') then //BT-128
+      with AddChild('ram:AdditionalReferencedDocument') do
+      begin
+        AddChild('ram:IssuerAssignedID').Text := _InvoiceLine.ObjectIdentifier;
+        AddChild('ram:TypeCode').Text := '130';
+        if (_InvoiceLine.ObjectIdentifierSchemeID <> '') then
+          AddChild('ram:ReferenceTypeCode').Text := _InvoiceLine.ObjectIdentifierSchemeID;
+      end;
       if (_InvoiceLine.BuyerAccountingReference <> '') then
         AddChild('ram:ReceivableSpecifiedTradeAccountingAccount').AddChild('ram:ID').Text := _InvoiceLine.BuyerAccountingReference;
     end;
-    if _Invoiceline.SubInvoiceLines.Count > 0 then
-      raise Exception.Create('SubInvoiceLines in UNCEFACT not implemented');
+    for i := 0 to _Invoiceline.SubInvoiceLines.Count-1 do
+      InternalAddInvoiceLine(_Invoiceline.SubInvoiceLines[i],_TransactionNode,_Invoiceline.ID);
   end;
 
 begin
@@ -1911,10 +2342,11 @@ begin
     end;
   end;
 
-  with xRoot.AddChild('rsm:SupplyChainTradeTransaction') do
+  xTransaction := xRoot.AddChild('rsm:SupplyChainTradeTransaction');
+  with xTransaction do
   begin
     for i := 0 to _Invoice.InvoiceLines.Count-1 do
-      InternalAddInvoiceLine(_Invoice.InvoiceLines[i],AddChild('ram:IncludedSupplyChainTradeLineItem'));
+      InternalAddInvoiceLine(_Invoice.InvoiceLines[i],xTransaction,'');
 
     with AddChild('ram:ApplicableHeaderTradeAgreement') do
     begin
@@ -1966,6 +2398,8 @@ begin
         if _Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyer <> '' then
         with AddChild('ram:URIUniversalCommunication').AddChild('ram:URIID') do
         begin
+          //unter Peppol kein 'EM'-Default, dort ist eine Kennung aus der EAS-Codeliste Pflicht
+          if (_Profile <> ipPeppol) or (_Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyerSchemeID <> '') then
           Attributes['schemeID'] := ifthen(_Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyerSchemeID='','EM',_Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyerSchemeID);
           Text := _Invoice.AccountingSupplierParty.ElectronicAddressSellerBuyer;
         end;
@@ -1984,7 +2418,10 @@ begin
       end;
       with AddChild('ram:BuyerTradeParty') do
       begin
-        if _Invoice.AccountingCustomerParty.IdentifierSellerBuyer <> '' then
+        //BT-46 nur einmal belegen (CII-SR-450) - GlobalID hat Vorrang vor ram:ID,
+        //nur im Extended-Profil sind beide zusammen erlaubt (keine EN16931-CIUS)
+        if (_Invoice.AccountingCustomerParty.IdentifierSellerBuyer <> '') and
+           ((_Invoice.AccountingCustomerParty.GlobalIdentifierSellerBuyer = '') or (_Profile = ipZUGFeRDExtended)) then
           AddChild('ram:ID').Text := _Invoice.AccountingCustomerParty.IdentifierSellerBuyer;
         if _Invoice.AccountingCustomerParty.GlobalIdentifierSellerBuyer <> '' then
         with AddChild('ram:GlobalID') do
@@ -2031,6 +2468,8 @@ begin
         if _Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyer <> '' then
         with AddChild('ram:URIUniversalCommunication').AddChild('ram:URIID') do
         begin
+          //unter Peppol kein 'EM'-Default, dort ist eine Kennung aus der EAS-Codeliste Pflicht
+          if (_Profile <> ipPeppol) or (_Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyerSchemeID <> '') then
           Attributes['schemeID'] := ifthen(_Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyerSchemeID='','EM',_Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyerSchemeID);
           Text := _Invoice.AccountingCustomerParty.ElectronicAddressSellerBuyer;
         end;
@@ -2056,8 +2495,24 @@ begin
         AddChild('ram:BuyerOrderReferencedDocument').AddChild('ram:IssuerAssignedID').Text := _Invoice.PurchaseOrderReference;
       if _Invoice.ContractDocumentReference <> '' then
         AddChild('ram:ContractReferencedDocument').AddChild('ram:IssuerAssignedID').Text := _Invoice.ContractDocumentReference;
+      bBT17Written := false;
+      bBT18Written := false;
       for i := 0 to _Invoice.Attachments.Count -1 do
       begin
+        //BT-17 ist nur einmal zulaessig (CII-SR-457), weitere Attachments mit iatc_50 werden verworfen
+        if (_Invoice.Attachments[i].TypeCode = iatc_50) then
+        begin
+          if bBT17Written or (_Invoice.Attachments[i].ID = '') then
+            Continue;
+          bBT17Written := true;
+        end;
+        //BT-18 ist nur einmal zulaessig (CII-SR-458), weitere Attachments mit iatc_130 werden verworfen
+        if (_Invoice.Attachments[i].TypeCode = iatc_130) then
+        begin
+          if bBT18Written or (_Invoice.Attachments[i].ID = '') then
+            Continue;
+          bBT18Written := true;
+        end;
         with AddChild('ram:AdditionalReferencedDocument') do
         begin
           AddChild('ram:IssuerAssignedID').Text := _Invoice.Attachments[i].ID;
@@ -2074,6 +2529,9 @@ begin
             Attributes['filename'] := _Invoice.Attachments[i].Filename;
             Text := _Invoice.Attachments[i].GetDataAsBase64;
           end;
+          //BT-18-1, im Schema nach AttachmentBinaryObject
+          if (_Invoice.Attachments[i].TypeCode = iatc_130) and (_Invoice.Attachments[i].SchemeID <> '') then
+            AddChild('ram:ReferenceTypeCode').Text := _Invoice.Attachments[i].SchemeID;
         end;
       end;
       if not (_Invoice.ProjectReference = '') then
@@ -2139,7 +2597,7 @@ begin
         Attributes['format'] := '102';
         Text := TXRechnungHelper.DateToStrUNCEFACTFormat(_Invoice.DeliveryInformation.ActualDeliveryDate);
       end;
-      if (_Invoice.DeliveryReceiptNumber <> '') then //Lieferscheinnummer
+      if (_Invoice.DeliveryReceiptNumber <> '') then //BT-16 Versandanzeigereferenz
       with AddChild('ram:DespatchAdviceReferencedDocument') do
       begin
         AddChild('ram:IssuerAssignedID').Text := _Invoice.DeliveryReceiptNumber;
@@ -2221,17 +2679,27 @@ begin
           AddChild('ram:ExemptionReason').Text := _Invoice.TaxAmountSubtotals[i].TaxExemptionReason;
         AddChild('ram:BasisAmount').Text := TXRechnungHelper.AmountToStr(_Invoice.TaxAmountSubtotals[i].TaxableAmount);
         AddChild('ram:CategoryCode').Text := TXRechnungHelper.InvoiceDutyTaxFeeCategoryCodeToStr(_Invoice.TaxAmountSubtotals[i].TaxCategory);
-        if (_Invoice.TaxAmountSubtotals[i].TaxCategory <> idtfcc_O_ServicesOutsideScopeOfTax) then
-          AddChild('ram:RateApplicablePercent').Text := TXRechnungHelper.PercentageToStr(_Invoice.TaxAmountSubtotals[i].TaxPercent);
+        if _Invoice.TaxAmountSubtotals[i].TaxExemptionReasonCode <> '' then
+          AddChild('ram:ExemptionReasonCode').Text := _Invoice.TaxAmountSubtotals[i].TaxExemptionReasonCode;
+        //BT-119 auch bei O (BR-DE-14)
+        AddChild('ram:RateApplicablePercent').Text := TXRechnungHelper.PercentageToStr(_Invoice.TaxAmountSubtotals[i].TaxPercent);
       end;
-      if (_Invoice.InvoicePeriodStartDate > 100) and (_Invoice.InvoicePeriodEndDate >= _Invoice.InvoicePeriodStartDate) then
+      if ((_Invoice.InvoicePeriodStartDate > 100) or
+         (_Invoice.InvoicePeriodEndDate > 100)) and
+         (
+           (_Invoice.InvoicePeriodStartDate <= 100) or
+           (_Invoice.InvoicePeriodEndDate <= 100) or
+           (_Invoice.InvoicePeriodEndDate >= _Invoice.InvoicePeriodStartDate)
+         ) then
       with AddChild('ram:BillingSpecifiedPeriod') do
       begin
+        if (_Invoice.InvoicePeriodStartDate > 100) then
         with AddChild('ram:StartDateTime').AddChild('udt:DateTimeString') do
         begin
           Attributes['format'] := '102';
           Text := TXRechnungHelper.DateToStrUNCEFACTFormat(_Invoice.InvoicePeriodStartDate);
         end;
+        if (_Invoice.InvoicePeriodEndDate > 100) then
         with AddChild('ram:EndDateTime').AddChild('udt:DateTimeString') do
         begin
           Attributes['format'] := '102';
@@ -2247,10 +2715,14 @@ begin
         if _Invoice.AllowanceCharges[i].BaseAmount <> 0 then
           AddChild('ram:BasisAmount').Text := TXRechnungHelper.AmountToStr(_Invoice.AllowanceCharges[i].BaseAmount);
         AddChild('ram:ActualAmount').Text := TXRechnungHelper.AmountToStr(_Invoice.AllowanceCharges[i].Amount);
-        AddChild('ram:ReasonCode').Text :=
-                 IfThen(_Invoice.AllowanceCharges[i].ChargeIndicator,
-                 TXRechnungHelper.InvoiceSpecialServiceDescriptionCodeToStr(_Invoice.AllowanceCharges[i].ReasonCodeCharge),
-                 TXRechnungHelper.InvoiceAllowanceOrChargeIdentCodeToStr(_Invoice.AllowanceCharges[i].ReasonCodeAllowance));
+        //Ohne Grundcode bleibt das Element weg - ein leeres Element wird beanstandet
+        if _Invoice.AllowanceCharges[i].ChargeIndicator then
+        begin
+          if _Invoice.AllowanceCharges[i].ReasonCodeCharge <> issdc_None then
+            AddChild('ram:ReasonCode').Text := TXRechnungHelper.InvoiceSpecialServiceDescriptionCodeToStr(_Invoice.AllowanceCharges[i].ReasonCodeCharge);
+        end else
+        if _Invoice.AllowanceCharges[i].ReasonCodeAllowance <> iacic_None then
+          AddChild('ram:ReasonCode').Text := TXRechnungHelper.InvoiceAllowanceOrChargeIdentCodeToStr(_Invoice.AllowanceCharges[i].ReasonCodeAllowance);
         if not (_Invoice.AllowanceCharges[i].Reason = '') then
           AddChild('ram:Reason').Text := _Invoice.AllowanceCharges[i].Reason;
         with AddChild('ram:CategoryTradeTax') do
@@ -2261,7 +2733,18 @@ begin
             AddChild('ram:RateApplicablePercent').Text := TXRechnungHelper.PercentageToStr(_Invoice.AllowanceCharges[i].TaxPercent);
         end;
       end;
-      if (_Profile = ipXRechnung) or (_Profile = ipZUGFeRDEN16931) then
+      //Nur ZUGFeRD EXTENDED kennt mehrere ram:SpecifiedTradePaymentTerms und die
+      //Detailinformationen zu Zahlungsabschlaegen (ram:ApplicableTradePaymentDiscountTerms, BG-X-44).
+      //EN16931 erlaubt nur eine Zahlungsbedingung, der Skonto wird dort als Text abgebildet.
+      //Ohne Inhalt kein Element, ein leeres ram:SpecifiedTradePaymentTerms
+      //verletzt PEPPOL-EN16931-R008. XRechnung schreibt bei einer Gutschrift
+      //kein Faelligkeitsdatum, das zaehlt dort also nicht als Inhalt.
+      if (_Profile <> ipZUGFeRDExtended) and
+         (((_Invoice.PaymentTermsType = iptt_Net) and (_Invoice.PaymentTermNetNote <> '')) or
+          (_Invoice.PaymentTermsType in [iptt_CashDiscount1,iptt_CashDiscount2,iptt_CashDiscount3]) or
+          ((_Invoice.InvoiceDueDate > 100) and
+           ((_Profile <> ipXRechnung) or (_Invoice.InvoiceTypeCode <> itc_CreditNote))) or
+          (_Invoice.PaymentMandateID <> '')) then
       with AddChild('ram:SpecifiedTradePaymentTerms') do
       begin
         case _Invoice.PaymentTermsType of
@@ -2311,7 +2794,7 @@ begin
                 #13#10;
           end;
         end;
-        if _Invoice.InvoiceTypeCode <> itc_CreditNote then
+        if (_Profile <> ipXRechnung) or (_Invoice.InvoiceTypeCode <> itc_CreditNote) then
         if _Invoice.InvoiceDueDate > 100 then
         with AddChild('ram:DueDateDateTime').AddChild('udt:DateTimeString') do
         begin
@@ -2320,7 +2803,8 @@ begin
         end;
         if _Invoice.PaymentMandateID <> '' then
           AddChild('ram:DirectDebitMandateID').Text := _Invoice.PaymentMandateID;
-      end else //if _ProfileZUGFeRDExtended then
+      end else
+      if (_Profile = ipZUGFeRDExtended) then
       begin
         if (_Invoice.InvoiceDueDate > 100) or
            (_Invoice.PaymentMandateID <> '') or
@@ -2404,7 +2888,8 @@ begin
         if _Invoice.PayableRoundingAmount <> 0.0 then
           AddChild('ram:RoundingAmount').Text := TXRechnungHelper.AmountToStr(_Invoice.PayableRoundingAmount);
         AddChild('ram:GrandTotalAmount').Text := TXRechnungHelper.AmountToStr(_Invoice.TaxInclusiveAmount);
-        AddChild('ram:TotalPrepaidAmount').Text := TXRechnungHelper.AmountToStr(_Invoice.PrepaidAmount);
+        if _Invoice.PrepaidAmount <> 0.0 then
+          AddChild('ram:TotalPrepaidAmount').Text := TXRechnungHelper.AmountToStr(_Invoice.PrepaidAmount);
         AddChild('ram:DuePayableAmount').Text := TXRechnungHelper.AmountToStr(_Invoice.PayableAmount);
       end;
       for i := 0 to _Invoice.PrecedingInvoiceReferences.Count-1 do
@@ -2417,8 +2902,10 @@ begin
           Attributes['format'] := '102';
           Text := TXRechnungHelper.DateToStrUNCEFACTFormat(_Invoice.PrecedingInvoiceReferences[i].IssueDate);
         end;
-        if (_Profile = ipXRechnung) then
-          break; //only one item allowed in xrechnung cii
+        //Factur-X 1.09 EN16931 erlaubt mehrere, das CII-D16B-Schema (KoSIT, Szenario XRechnung und EN16931)
+        //aber nur eines; mehrere nur in EXTENDED
+        if (_Profile <> ipZUGFeRDExtended) then
+          break;
       end;
       if _Invoice.BuyerAccountingReference <> '' then
       with AddChild('ram:ReceivableSpecifiedTradeAccountingAccount') do

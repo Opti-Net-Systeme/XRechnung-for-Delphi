@@ -26,6 +26,8 @@
 #*.obj
 #
 
+AddOns
+einheiten.csv
 Documentation/*/*.zip
 Documentation/*/*.xml
 Documentation/*.txt
@@ -34,6 +36,9 @@ Documentation/*.rc
 Documentation/*.res
 Documentation/*.eml
 Documentation/*.md
+!Documentation/Parteikennungen-BT-29-BT-46.md
+!Documentation/ZUGFeRD-Support.md
+!Documentation/Cyber-Resilience-Act.md
 Documentation/More
 Samples/Win32
 Samples/Win64
@@ -46,6 +51,7 @@ Distribution/validator*
 Distribution/valitool
 Distribution/visualization23x
 Distribution/visualization30x
+Distribution/visualization-bis
 Distribution/java
 Distribution/saxon
 Distribution/apache-fop
@@ -105,3 +111,6 @@ __recovery/
 *.rar
 # FreePascal-Test-Build-Ausgaben
 Tests/FreePascal/out/
+Tests/PdfExtract/out/
+
+CLAUDE.md

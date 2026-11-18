@@ -1,4 +1,4 @@
-{
+﻿{
 License XRechnung-for-Delphi
 
 Copyright (C) 2026 Landrix Software GmbH & Co. KG
@@ -86,26 +86,36 @@ type
     ///vollstaendig oder mangelhaft erbracht wurde und damit der
     ///Rechnungsbetrag reduziert werden muss. Eine Rechnungskorrektur
     ///muss sich dabei immer auf eine bereits erstellte Rechnung beziehen.
+    ///Bezug: BT-25 Nummer und BT-26 Datum der Originalrechnung (XRechnung
+    ///3.0.2 Kap. 13.1, BR-DE-26). Ein vollstaendiges Storno hat negative
+    ///Mengen bei positiven Einzelpreisen und damit negative Summen.
     itc_CorrectedInvoice, //384
 
-    itc_PrepaymentInvoice, // 386 Vorauszahlungsrechnung - nicht in XRechnung verwenden
+    ///TypeCode: 386 Vorauszahlungsrechnung
+    ///In XRechnung nicht empfohlen (BR-DE-17 nennt nur 326, 380, 381, 384,
+    ///389, 875, 876, 877; Warnung, kein Abbruch). Vorausrechnungen (z. B.
+    ///Wartung im Voraus) als 380 mit Hinweis im Rechnungstext.
+    itc_PrepaymentInvoice,
 
     itc_Cancellation, // 457 Storno - nicht in XRechnung verwenden
 
     ///TypeCode: 389 Selbstfakturierte Rechnung
-    ///Eine selbstfakturierte Rechnung wird vom Kunden ausgestellt.
+    ///Eine selbstfakturierte Rechnung wird vom Kunden ausgestellt
+    ///(umsatzsteuerliche Gutschrift, Paragraph 14 Abs. 2 UStG).
     ///Der Lieferant erhaelt eine Rechnungskopie und die Zahlung von
     ///dem Kunde.
     ///Fuer die Abrechnung von Bauleistungen muessen gemaess Paragraph 14 und 16 VOB/B
     ///folgende Rechnungstypen verwendet werden.
     itc_SelfbilledInvoice,
 
-    ///TypeCode: 381 Gutschrift
-    ///Eine Gutschrift ist steuerrechtlich eine Rechnung, die -im Gegensatz
-    ///zur Rechnung- vom Leistungsempfaenger ausgestellt wird. Nicht zu
-    ///verwechseln ist die Gutschrift mit einer Rechnungskorrektur die
-    ///landlaeufig auch als Gutschrift bezeichnet wird.
-    ///Die Gutschrift weist immer einen positiven Betrag aus.
+    ///TypeCode: 381 Gutschrift (Credit Note)
+    ///Kaufmaennische Gutschrift des Lieferanten an den Kunden, z. B. fuer
+    ///Rueckgaben oder Preisnachlaesse; beim Storno einer gewoehnlichen
+    ///Rechnung mit positiven Betraegen. Nicht die umsatzsteuerliche
+    ///Gutschrift (Abrechnung durch den Leistungsempfaenger, Paragraph 14
+    ///Abs. 2 UStG) - dafuer gilt 389. In UBL ist 381 ein eigenes
+    ///CreditNote-Dokument, nicht Invoice; in CII nur der Code.
+    ///Fuer das Storno einer eigenen Rechnung 384 verwenden.
     itc_CreditNote,
 
     ///TypeCode: 875 Abschlagsrechnung (Bauleistung)
@@ -249,6 +259,21 @@ type
                       ,iuc_kilowatt_hour
                       ,iuc_percent
                       ,iuc_packaging //Verpackung
+                      ,iuc_year   //ANN
+                      ,iuc_person //IE
+                      ,iuc_square_decimetre //DMK
+                      ,iuc_cubic_decimetre  //DMQ
+                      ,iuc_decimetre        //DMT
+                      ,iuc_centimetre       //CMT
+                      ,iuc_square_centimetre //CMK
+                      ,iuc_cubic_centimetre //CMQ
+                      ,iuc_pair             //PR
+                      ,iuc_bag              //XBG
+                      ,iuc_roll             //XRO
+                      ,iuc_foot             //FOT
+                      ,iuc_inch             //INH
+                      ,iuc_hectare          //H18 (HAR lehnt Factur-X ab)
+                      ,iuc_sack             //XSA (Beutel/Tuete ist iuc_bag, XBG)
                       );
   //mehr Einheiten in Res\intf.Invoice.unusedUnits.pas
 
@@ -286,6 +311,7 @@ type
     DocumentDescription : String;
     Filename : String;
     TypeCode : TInvoiceAttachmentTypeCode;
+    SchemeID : String; //BT-18-1 Kennung des Schemas der Objektkennung (nur TypeCode 130), Codeliste UNTDID 1153, z.B. IL = Innenauftrag
     AttachmentType : TInvoiceAttachmentType;
     Data : TMemoryStream;         //https://docs.peppol.eu/poacc/billing/3.0/syntax/ubl-invoice/cac-AdditionalDocumentReference/cac-Attachment/cbc-EmbeddedDocumentBinaryObject/
     ExternalReference : String;   // Gemaesss BMF-Schreiben vom 15.10.2024 sollen Links auf rechnungsbegruendende Unterlagen nicht verwendet werden. Sie sollen stattdessen in die XML-Datei eingebettet werden. Dies gilt ab dem 01.01.2025.
@@ -546,12 +572,40 @@ type
     function  AddItemAttribute : TInvoiceLineItemAttribute;
   end;
 
+  TInvoiceLineItemClassification = class(TObject)
+  public
+    ClassCode : String;      //BT-158 Kennung der Artikelklassifizierung, z.B. FRACHT
+    ListID : String;         //BT-158-1 Pflicht wenn ClassCode gesetzt (UNTDID 7143), z.B. GB
+    ListVersionID : String;  //BT-158-2 optional, Version des Schemas
+    ClassificationName : String; //nur ZUGFeRD/Factur-X EXTENDED (ram:ClassName), sonst unzulaessig
+  end;
+
+  TInvoiceLineItemClassifications = class(TObjectList)
+  protected
+    function GetItem(Index: TInvoiceListItemType): TInvoiceLineItemClassification;
+    procedure SetItem(Index: TInvoiceListItemType; AItem: TInvoiceLineItemClassification);
+  public
+	  function  Extract(Item: TObject): TInvoiceLineItemClassification;
+	  function  First: TInvoiceLineItemClassification;
+	  function  Last: TInvoiceLineItemClassification;
+	  property  Items[Index: TInvoiceListItemType]: TInvoiceLineItemClassification read GetItem write SetItem; default;
+  public
+    function  AddItemClassification : TInvoiceLineItemClassification;
+  end;
+
+  //BT-X-8 Untertyp der Rechnungsposition (ram:LineStatusReasonCode), nur ZUGFeRD/Factur-X EXTENDED
+  //- DETAIL : regulaere Position, zaehlt in die Summen (Standard)
+  //- GROUP : Zwischensumme ueber ihre Unterpositionen, zaehlt nicht in die Summen
+  //- INFORMATION : reine Information, zaehlt nicht in die Summen
+  TInvoiceLineStatusReasonCode = (ilsrc_None, ilsrc_Detail, ilsrc_Group, ilsrc_Information);
+
   TInvoiceLine = class(TObject) // insgesamt BG-25
   public
     ID : String; //BT-126 Positionsnummer
     GlobalID_EAN_GTIN: String; //BG-31, BT-157 GTIN/EAN
     Note : String; //BT-127 Hinweis
-    //BT-128 fehlt, "Objektkennung auf Ebene der Rechnungsposition", vom Verkaeufer vergeben
+    ObjectIdentifier : String; //BT-128 Objektkennung auf Ebene der Rechnungsposition, vom Verkaeufer vergeben
+    ObjectIdentifierSchemeID : String; //BT-128-1 Kennung des Schemas, Codeliste UNTDID 1153, z.B. ON = Bestellnummer des Kaeufers
     Name : String; //BG-31, BT-153 Kurztext
     Description : String; //BG-31, BT-154 Laengere Beschreibung
     Quantity : double; //BT-129 Menge
@@ -574,12 +628,35 @@ type
     AllowanceCharges : TInvoiceAllowanceCharges; // BG-27 (BT-136..BT-140) und BG-28 (BT-141..BT-145)
     InvoiceLinePeriodStartDate : TDate; //BG-26, BT-134 Leistungszeitraum Beginn
     InvoiceLinePeriodEndDate : TDate; //BG-26, BT-135 Leistungszeitraum Ende
-    //BG-31, BT-158 fehlt , DesignatedProductClassification "Kennung der Artikelklassifizierung", (0..n)
+    ItemClassifications : TInvoiceLineItemClassifications; //BG-31, BT-158 "Kennung der Artikelklassifizierung", (0..n)
     OriginTradeCountry : String; //BG-31, BT-159 Artikelherkunftsland z.B. DE
     ItemAttributes : TInvoiceLineItemAttributes; //BG-31:BG-32 (BT-160..BT-161)
 
-    // Extension XRechnung
+    // Lieferangaben je Position, z.B. fuer Sammelrechnungen ueber mehrere Lieferscheine.
+    // NUR ZUGFeRD/Factur-X EXTENDED (ram:SpecifiedLineTradeDelivery). EN16931, XRechnung
+    // (UBL und CII) und Peppol kennen diese Angaben auf Positionsebene nicht, dort werden
+    // die Felder beim Schreiben ignoriert, ConsistencyCheck meldet dann ccLineDeliveryOnlyExtended.
+    // Rechnungsweit: DeliveryReceiptNumberExtended,
+    // DeliveryReceiptDateExtended und DeliveryInformation.ActualDeliveryDate am TInvoice.
+    DeliveryNoteNumber : String; //BT-X-92 Lieferscheinnummer der Position, nur EXTENDED
+    DeliveryNoteLineID : String; //BT-X-93 Positionsnummer auf dem Lieferschein, nur EXTENDED, nur zusammen mit DeliveryNoteNumber
+    DeliveryNoteDate : TDate;    //BT-X-94 Lieferscheindatum der Position, nur EXTENDED, nur zusammen mit DeliveryNoteNumber
+    ActualDeliveryDate : TDate;  //Tatsaechliches Lieferdatum der Position, nur EXTENDED
+
+    // Unterpositionen, z.B. Titel/Positionsgruppen
+    // - XRechnung UBL (Extension): cac:SubInvoiceLine, der Betrag der Oberposition zaehlt
+    //   in die Summe der Positionen (BT-106), die Unterpositionen nicht.
+    // - ZUGFeRD/Factur-X EXTENDED: flache Positionen mit ParentLineID (BT-X-304), nur die
+    //   DETAIL-Positionen zaehlen in BT-106. Eine Oberposition (GROUP) muss genau die Summe
+    //   ihrer DETAIL- und GROUP-Unterpositionen tragen (BR-FXEXT-08), Unterpositionen
+    //   muessen vollstaendige Positionen sein (Menge, Nettopreis, Steuerkategorie).
+    //   ConsistencyCheck prueft das (ccSubInvoiceLineAmountMismatch).
+    // - XRechnung CII und ZUGFeRD EN16931 kennen keine Unterpositionen (ccSubInvoiceLinesNotSupported).
     SubInvoiceLines : TInvoiceLines;
+    // BT-X-8, nur EXTENDED. Bei ilsrc_None leitet der Schreibcode den Wert aus der
+    // Struktur ab: mit Unterpositionen GROUP, als Unterposition DETAIL, sonst nichts.
+    // Beim Lesen wird der Wert aus der Datei uebernommen.
+    LineStatusReasonCode : TInvoiceLineStatusReasonCode;
   public
     constructor Create;
     destructor Destroy; override;
@@ -605,6 +682,7 @@ type
     TaxPercent : double;
     TaxCategory : TInvoiceDutyTaxFeeCategoryCode;
     TaxExemptionReason : String; //sollte gesetzt werden bei TaxCategory = AE,E,O,Z
+    TaxExemptionReasonCode : String; //BT-121 Code fuer den Befreiungsgrund (VATEX), z. B. VATEX-EU-AE
   public
     constructor Create;
   end;
@@ -632,6 +710,7 @@ type
     CountrySubentity : String;
     AddressLine : String;
     CountryCode : String;
+    procedure Clear;
   end;
 
   // Von TH
@@ -651,9 +730,19 @@ type
 
     Address : TInvoiceAddress;
 
+    //Die Kennung wird ohne schemeID ausgegeben, eine GLN oder eine andere Kennung aus der ICD-Liste
+    //gehoert in GlobalIdentifierSellerBuyer. Unter Peppol wird eine ID mit schemeID 0088 auf eine
+    //gueltige GLN-Pruefziffer geprueft (PEPPOL-COMMON-R040), eine Kreditor-Nr. scheitert dort.
+    //In UBL ist je Partei nur eine Kennung zulaessig (Kaeufer UBL-SR-16, Verkaeufer VD-Valitool-23),
+    //in CII gilt das fuer den Kaeufer (CII-SR-450) - dort hat jeweils die GlobalID Vorrang.
+    //Die Glaeubiger-ID (BT-90) belegt beim Verkaeufer ebenfalls eine cac:PartyIdentification,
+    //unterschieden ueber schemeID SEPA. KoSIT prueft beide Arten getrennt, valitool.org zaehlt sie
+    //zusammen und meldet dann VD-Valitool-23. Beide werden trotzdem geschrieben, BT-90 hat in UBL
+    //keine andere Abbildung.
+    //Beim Lesen landet jede ID mit schemeID ausser SEPA in GlobalIdentifierSellerBuyer.
     IdentifierSellerBuyer : String; //BT-29 Kreditor-Nr AccountingSupplierParty / BT-46 Debitor-Nr AccountingCustomerParty
-    GlobalIdentifierSellerBuyer : String; //BT-29-0, BT-46-0, optional nur CII
-    GlobalIdentifierSellerBuyerSchemeID : String; //BT-29-1, BT-46-1, optional nur CII, Werte 0021 : SWIFT, 0088 : EAN, 0060 : DUNS, 0177 : ODETTE
+    GlobalIdentifierSellerBuyer : String; //BT-29-0, BT-46-0, optional, CII: ram:GlobalID, UBL: cac:PartyIdentification/cbc:ID mit schemeID
+    GlobalIdentifierSellerBuyerSchemeID : String; //BT-29-1, BT-46-1, Default 0088 (GLN), Werte 0021 : SWIFT, 0088 : EAN/GLN, 0060 : DUNS, 0177 : ODETTE
     BankAssignedCreditorIdentifier : String; //Glaeubiger-ID (BT-90)
 
     VATCompanyID : String;   //BT-31 UStID
@@ -668,6 +757,7 @@ type
   public
     constructor Create;
     destructor Destroy; override;
+    procedure Clear;
   end;
 
   TInvoiceDeliveryInformation = class(TObject)
@@ -680,6 +770,7 @@ type
   public
     constructor Create;
     destructor Destroy; override;
+    procedure Clear;
   end;
 
   TInvoicePrecedingInvoiceReference = class(TObject)
@@ -713,7 +804,8 @@ type
     insc_ABL,  //Rechtliche Informationen
     insc_TXD,  //Informationen zur Steuer
     insc_CUS,  //Zollinformationen
-    insc_PMT   //Payment Information Bürgschaften oder Sicherheitseinbehalte
+    insc_PMT,  //Payment Information Bürgschaften oder Sicherheitseinbehalte
+    insc_BLP   //Gesetzliche Vorschriften (Legislation), z. B. Aufbewahrungspflicht nach §14b UStG
     );
 
   TInvoiceNote = class(Tobject)
@@ -781,8 +873,10 @@ type
     ProjectReference : String; //BT-11
     ReceiptDocumentReference : String; //BT-15
     ContractDocumentReference : String; //BT-12
-    DeliveryReceiptNumber : String; //BT-16 Lieferscheinnummer XRechnung CII, UBL
-    DeliveryReceiptDate : TDate;    //BT-X-200 Lieferscheindatum ZUGFeRD-CII, XRechnung CII u UBL nicht unterstuetzt
+    //BT-16 ist die Versandanzeigereferenz (ram:DespatchAdviceReferencedDocument, cac:DespatchDocumentReference)
+    //und nicht die Lieferscheinnummer, diese steht als BT-X-202 in ram:DeliveryNoteReferencedDocument
+    DeliveryReceiptNumber : String; //BT-16 Versandanzeigereferenz XRechnung CII, UBL
+    DeliveryReceiptDate : TDate;    //BT-X-200 Datum der Versandanzeige ZUGFeRD-CII-Extended, XRechnung CII u UBL nicht unterstuetzt
     DeliveryReceiptNumberExtended : String; //BT-X-202 Lieferscheinnummer ZUGFeRD-CII-Extended, Falls man es benötigt
     DeliveryReceiptDateExtended : TDate;    //BT-X-203 Lieferscheindatum ZUGFeRD-CII-Extended, Falls man es benötigt
     BuyerAccountingReference : String; //BT-19 Buchungsreferenz des Kaeufers für die Rechnung UBL ein Wert, CII Liste
@@ -878,11 +972,57 @@ procedure TInvoice.Clear;
 begin
   ProfileID := 'urn:fdc:peppol.eu:2017:poacc:billing:01:1.0';
   InvoiceLines.Clear;
+  Attachments.Clear;
+  
+  InvoiceNumber := '';
+  InvoiceIssueDate := 0;
+  InvoiceDueDate := 0;
+  InvoicePeriodStartDate := 0;
+  InvoicePeriodEndDate := 0;
+  InvoiceTypeCode := TInvoiceTypeCode.itc_None;
+  InvoiceCurrencyCode := '';
+  TaxCurrencyCode := '';
+  BuyerReference := '';
+  Notes.Clear;
+  SellerOrderReference := '';
+  PurchaseOrderReference := '';
+  ProjectReference := '';
+  ReceiptDocumentReference := '';
+  ContractDocumentReference := '';
+  DeliveryReceiptNumber := '';
+  DeliveryReceiptDate := 0;
+  DeliveryReceiptNumberExtended := '';
+  DeliveryReceiptDateExtended := 0;
+  BuyerAccountingReference := '';
+  
+  AccountingSupplierParty.Clear;
+  AccountingCustomerParty.Clear;
+  DeliveryInformation.Clear;
+  
+  PaymentID := '';
+  PaymentTypes.Clear;
+  PaymentMandateID := '';
+  PaymentTermsType := iptt_None;
+  PaymentTermNetNote := '';
+  PaymentTermCashDiscount1Days := 0;
+  PaymentTermCashDiscount1Percent := 0;
+  PaymentTermCashDiscount1Base := 0;
+  PaymentTermCashDiscount1ActualAmount := 0;
+  PaymentTermCashDiscount2Days := 0;
+  PaymentTermCashDiscount2Percent := 0;
+  PaymentTermCashDiscount2Base := 0;
+  PaymentTermCashDiscount2ActualAmount := 0;
+  PaymentTermCashDiscount3Days := 0;
+  PaymentTermCashDiscount3Percent := 0;
+  PaymentTermCashDiscount3Base := 0;
+  PaymentTermCashDiscount3ActualAmount := 0;
+  
+  PrepaidPayments.Clear;
   AllowanceCharges.Clear;
   PrecedingInvoiceReferences.Clear;
-  Notes.Clear;
+  
+  TaxAmountTotal := 0;
   TaxAmountSubtotals.Clear;
-  PaymentTermsType := iptt_None;
 
   LineAmount := 0;
   TaxExclusiveAmount := 0;
@@ -1058,6 +1198,8 @@ begin
   ID := '';
   GlobalID_EAN_GTIN := '';
   Note := '';
+  ObjectIdentifier := '';
+  ObjectIdentifierSchemeID := '';
   Name := '';
   Description := '';
   Quantity := 0;
@@ -1077,9 +1219,14 @@ begin
   AllowanceCharges := TInvoiceAllowanceCharges.Create;
   SubInvoiceLines := TInvoiceLines.Create;
   ItemAttributes := TInvoiceLineItemAttributes.Create;
+  ItemClassifications := TInvoiceLineItemClassifications.Create;
   InvoiceLinePeriodStartDate := 0;
   InvoiceLinePeriodEndDate := 0;
   OriginTradeCountry := '';
+  DeliveryNoteNumber := '';
+  DeliveryNoteLineID := '';
+  DeliveryNoteDate := 0;
+  ActualDeliveryDate := 0;
 end;
 
 destructor TInvoiceLine.Destroy;
@@ -1087,6 +1234,7 @@ begin
   if Assigned(AllowanceCharges) then begin AllowanceCharges.Free; AllowanceCharges := nil; end;
   if Assigned(SubInvoiceLines) then begin SubInvoiceLines.Free; SubInvoiceLines := nil; end;
   if Assigned(ItemAttributes) then begin ItemAttributes.Free; ItemAttributes := nil; end;
+  if Assigned(ItemClassifications) then begin ItemClassifications.Free; ItemClassifications := nil; end;
   inherited;
 end;
 
@@ -1099,7 +1247,10 @@ begin
 
   Result := _DefaultOnFailure;
   _Success := false;
-  _UnitOfMeasure := Trim(_UnitOfMeasure);
+  //SameText faltet nur A-Z: Umlaute vorher klein (STÜCK, SÄCKE, KÖPFE, FUß)
+  _UnitOfMeasure := AnsiLowerCase(Trim(_UnitOfMeasure));
+  //grosses scharfes S (U+1E9E) bildet CharLowerBuff nicht ab
+  _UnitOfMeasure := StringReplace(_UnitOfMeasure,#$1E9E,#$00DF,[rfReplaceAll]);
   if _UnitOfMeasure = '' then
   begin
     Result := iuc_one;
@@ -1264,7 +1415,6 @@ begin
     exit;
   end;
   if SameText(_UnitOfMeasure,'qm') or
-     SameText(_UnitOfMeasure,'dm2') or
      SameText(_UnitOfMeasure,'m2') or
      SameText(_UnitOfMeasure,'m'+#178) or
      SameText(_UnitOfMeasure,'quadratmeter') or
@@ -1279,7 +1429,6 @@ begin
   end;
   if SameText(_UnitOfMeasure,'qqm')or
      SameText(_UnitOfMeasure,'cbm') or
-     SameText(_UnitOfMeasure,'dm3') or
      SameText(_UnitOfMeasure,'m3') or
      SameText(_UnitOfMeasure,'m'+#179) or
      SameText(_UnitOfMeasure,'kubikmeter') or
@@ -1295,7 +1444,6 @@ begin
   end;
   if SameText(_UnitOfMeasure,'m') or
      SameText(_UnitOfMeasure,'lfm') or
-     SameText(_UnitOfMeasure,'me') or
      SameText(_UnitOfMeasure,'meter') or
      SameText(_UnitOfMeasure,'meters') or
      SameText(_UnitOfMeasure,'metre') or
@@ -1317,7 +1465,96 @@ begin
     exit;
   end;
   if SameText(_UnitOfMeasure,'qmm') or
-     SameText(_UnitOfMeasure,'mm3') or
+     SameText(_UnitOfMeasure,'mm2') or
+     SameText(_UnitOfMeasure,'mm'+#178) or
+     SameText(_UnitOfMeasure,'quadratmillimeter') or
+     SameText(_UnitOfMeasure,'square millimeter') or
+     SameText(_UnitOfMeasure,'square millimeters') or
+     SameText(_UnitOfMeasure,'square millimetre') or
+     SameText(_UnitOfMeasure,'square millimetres') then
+  begin
+    Result := iuc_square_millimetre;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'dm') or
+     SameText(_UnitOfMeasure,'dezimeter') or
+     SameText(_UnitOfMeasure,'decimeter') or
+     SameText(_UnitOfMeasure,'decimetre') then
+  begin
+    Result := iuc_decimetre;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'dm2') or
+     SameText(_UnitOfMeasure,'dm'+#178) or
+     SameText(_UnitOfMeasure,'qdm') or
+     SameText(_UnitOfMeasure,'quadratdezimeter') or
+     SameText(_UnitOfMeasure,'square decimeter') or
+     SameText(_UnitOfMeasure,'square decimetre') then
+  begin
+    Result := iuc_square_decimetre;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'dm3') or
+     SameText(_UnitOfMeasure,'dm'+#179) or
+     SameText(_UnitOfMeasure,'kubikdezimeter') or
+     SameText(_UnitOfMeasure,'cubic decimeter') or
+     SameText(_UnitOfMeasure,'cubic decimetre') then
+  begin
+    Result := iuc_cubic_decimetre;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'cm') or
+     SameText(_UnitOfMeasure,'zentimeter') or
+     SameText(_UnitOfMeasure,'centimeter') or
+     SameText(_UnitOfMeasure,'centimeters') or
+     SameText(_UnitOfMeasure,'centimetre') or
+     SameText(_UnitOfMeasure,'centimetres') then
+  begin
+    Result := iuc_centimetre;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'cm2') or
+     SameText(_UnitOfMeasure,'cm'+#178) or
+     SameText(_UnitOfMeasure,'qcm') or
+     SameText(_UnitOfMeasure,'quadratzentimeter') or
+     SameText(_UnitOfMeasure,'square centimeter') or
+     SameText(_UnitOfMeasure,'square centimeters') or
+     SameText(_UnitOfMeasure,'square centimetre') or
+     SameText(_UnitOfMeasure,'square centimetres') then
+  begin
+    Result := iuc_square_centimetre;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'cm3') or
+     SameText(_UnitOfMeasure,'cm'+#179) or
+     SameText(_UnitOfMeasure,'ccm') or
+     SameText(_UnitOfMeasure,'kubikzentimeter') or
+     SameText(_UnitOfMeasure,'cubic centimeter') or
+     SameText(_UnitOfMeasure,'cubic centimeters') or
+     SameText(_UnitOfMeasure,'cubic centimetre') or
+     SameText(_UnitOfMeasure,'cubic centimetres') then
+  begin
+    Result := iuc_cubic_centimetre;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'paar') or
+     SameText(_UnitOfMeasure,'paare') or
+     SameText(_UnitOfMeasure,'pr') or
+     SameText(_UnitOfMeasure,'pair') or
+     SameText(_UnitOfMeasure,'pairs') then
+  begin
+    Result := iuc_pair;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'mm3') or
      SameText(_UnitOfMeasure,'mm'+#179) or
      SameText(_UnitOfMeasure,'kubikmillimeter') or
      SameText(_UnitOfMeasure,'cubic millimeter') or
@@ -1330,7 +1567,6 @@ begin
     exit;
   end;
   if SameText(_UnitOfMeasure,'min') or
-     SameText(_UnitOfMeasure,'min') or
      SameText(_UnitOfMeasure,'minute') or
      SameText(_UnitOfMeasure,'minuten') or
      SameText(_UnitOfMeasure,'minutes') then
@@ -1379,12 +1615,111 @@ begin
      SameText(_UnitOfMeasure,'PCK') or
      SameText(_UnitOfMeasure,'Pack') or
      SameText(_UnitOfMeasure,'VP') or
+     SameText(_UnitOfMeasure,'pak') or
      SameText(_UnitOfMeasure,'Kart.') then
   begin
     Result := iuc_packaging;
     _Success := true;
     exit;
   end;
+
+  if SameText(_UnitOfMeasure,'anz') or
+     SameText(_UnitOfMeasure,'anzahl') or
+     SameText(_UnitOfMeasure,'qty') then
+  begin
+    Result := iuc_number_of_articles;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'set') or
+     SameText(_UnitOfMeasure,'sets') or
+     SameText(_UnitOfMeasure,'satz') then
+  begin
+    Result := iuc_set;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'j') or
+     SameText(_UnitOfMeasure,'y') or
+     SameText(_UnitOfMeasure,'yr') or
+     SameText(_UnitOfMeasure,'jahr') or
+     SameText(_UnitOfMeasure,'jahre') or
+     SameText(_UnitOfMeasure,'year') or
+     SameText(_UnitOfMeasure,'years') then
+  begin
+    Result := iuc_year;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'person') or
+     SameText(_UnitOfMeasure,'personen') or
+     SameText(_UnitOfMeasure,'pers') or
+     SameText(_UnitOfMeasure,'persons') or
+     SameText(_UnitOfMeasure,'people') or
+     SameText(_UnitOfMeasure,'kopf') or
+     SameText(_UnitOfMeasure,'kpf') or
+     SameText(_UnitOfMeasure,'köpfe') or
+     SameText(_UnitOfMeasure,'koepfe') then
+  begin
+    Result := iuc_person;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'sack') or
+     SameText(_UnitOfMeasure,'säcke') or
+     SameText(_UnitOfMeasure,'saecke') or
+     SameText(_UnitOfMeasure,'sck') then
+  begin
+    Result := iuc_sack;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'beutel') or
+     SameText(_UnitOfMeasure,'bag') or
+     SameText(_UnitOfMeasure,'bags') then
+  begin
+    Result := iuc_bag;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'rolle') or
+     SameText(_UnitOfMeasure,'rollen') or
+     SameText(_UnitOfMeasure,'rol') or
+     SameText(_UnitOfMeasure,'roll') or
+     SameText(_UnitOfMeasure,'rolls') then
+  begin
+    Result := iuc_roll;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'ft') or
+     SameText(_UnitOfMeasure,'foot') or
+     SameText(_UnitOfMeasure,'feet') or
+     SameText(_UnitOfMeasure,'fuß') or
+     SameText(_UnitOfMeasure,'fuss') then
+  begin
+    Result := iuc_foot;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'inch') or
+     SameText(_UnitOfMeasure,'zoll') then
+  begin
+    Result := iuc_inch;
+    _Success := true;
+    exit;
+  end;
+  if SameText(_UnitOfMeasure,'ha') or
+     SameText(_UnitOfMeasure,'hektar') or
+     SameText(_UnitOfMeasure,'hectare') then
+  begin
+    Result := iuc_hectare;
+    _Success := true;
+    exit;
+  end;
+  //nicht zugeordnet (mehrdeutig oder ohne Code in der ZUGFeRD-Bibliothek):
+  //Nutzung E55 (x, mal, time - "mal" ist C62), Kopf/Tier HEA, Kubikfuss FTQ,
+  //ktu, no, in, per, me
 end;
 
 { TInvoiceAttachment }
@@ -1515,6 +1850,8 @@ procedure TInvoiceAttachment.SetDataFromBase64(const _Val: String);
 var
   ss : TStringStream;
   dec : TBase64DecodingStream;
+  buf : array[0..16383] of Byte;
+  cnt : Integer;
 begin
   Data.Clear;
   if _Val = '' then
@@ -1522,7 +1859,14 @@ begin
   ss := TStringStream.Create(AnsiString(_Val));
   dec := TBase64DecodingStream.Create(ss);
   try
-    Data.CopyFrom(dec,0); // 0 = gesamten Quellstrom kopieren
+    //TBase64DecodingStream unterstuetzt weder Size noch Seek - CopyFrom(dec,0)
+    //wuerde daher EStreamError ausloesen. Stattdessen blockweise bis zum
+    //Stromende lesen.
+    repeat
+      cnt := dec.Read(buf,SizeOf(buf));
+      if cnt > 0 then
+        Data.Write(buf,cnt);
+    until cnt <= 0;
     Data.Seek(0,soFromBeginning);
   finally
     dec.Free;
@@ -1633,6 +1977,7 @@ begin
   TaxPercent := 0;
   TaxCategory := idtfcc_None;
   TaxExemptionReason := '';
+  TaxExemptionReasonCode := '';
 end;
 
 { TInvoiceTaxAmounts }
@@ -1674,6 +2019,19 @@ begin
   end;
 end;
 
+{ TInvoiceAddress }
+
+procedure TInvoiceAddress.Clear;
+begin
+  StreetName := '';
+  AdditionalStreetName := '';
+  City := '';
+  PostalZone := '';
+  CountrySubentity := '';
+  AddressLine := '';
+  CountryCode := '';
+end;
+
 { TInvoiceAccountingParty }
 
 constructor TInvoiceAccountingParty.Create;
@@ -1685,6 +2043,30 @@ destructor TInvoiceAccountingParty.Destroy;
 begin
   if Assigned(Address) then begin Address.Free; Address := nil; end;
   inherited;
+end;
+
+procedure TInvoiceAccountingParty.Clear;
+begin
+  Name := '';
+  RegistrationName := '';
+  CompanyID := '';
+
+  Address.Clear;
+
+  IdentifierSellerBuyer := '';
+  GlobalIdentifierSellerBuyer := '';
+  GlobalIdentifierSellerBuyerSchemeID := '';
+  BankAssignedCreditorIdentifier := '';
+
+  VATCompanyID := '';
+  VATCompanyNumber := '';
+
+  ContactName := '';
+  ContactTelephone := '';
+  ContactElectronicMail := '';
+  AdditionalLegalInformationSeller := '';
+  ElectronicAddressSellerBuyer := '';
+  ElectronicAddressSellerBuyerSchemeID := ''; 
 end;
 
 { TInvoiceDeliveryInformation }
@@ -1699,6 +2081,15 @@ destructor TInvoiceDeliveryInformation.Destroy;
 begin
   if Assigned(Address) then begin Address.Free; Address := nil; end;
   inherited;
+end;
+
+procedure TInvoiceDeliveryInformation.Clear;
+begin
+  Name := '';
+  LocationIdentifier := '';
+  LocationIdentifierSchemeID := '0088';
+  Address.Clear;
+  ActualDeliveryDate := 0;
 end;
 
 { TInvoiceLineItemAttributes }
@@ -1722,6 +2113,29 @@ function TInvoiceLineItemAttributes.Last: TInvoiceLineItemAttribute;
 begin if Count = 0 then Result := nil else Result := TInvoiceLineItemAttribute(inherited Last); end;
 
 procedure TInvoiceLineItemAttributes.SetItem(Index: TInvoiceListItemType; AItem: TInvoiceLineItemAttribute);
+begin inherited Items[Index] := AItem; end;
+
+{ TInvoiceLineItemClassifications }
+
+function TInvoiceLineItemClassifications.AddItemClassification: TInvoiceLineItemClassification;
+begin
+  Result := TInvoiceLineItemClassification.Create;
+  Add(Result);
+end;
+
+function TInvoiceLineItemClassifications.Extract(Item: TObject): TInvoiceLineItemClassification;
+begin Result := TInvoiceLineItemClassification(inherited Extract(Item)); end;
+
+function TInvoiceLineItemClassifications.First: TInvoiceLineItemClassification;
+begin if Count = 0 then Result := nil else Result := TInvoiceLineItemClassification(inherited First); end;
+
+function TInvoiceLineItemClassifications.GetItem(Index: TInvoiceListItemType): TInvoiceLineItemClassification;
+begin Result := TInvoiceLineItemClassification(inherited Items[Index]); end;
+
+function TInvoiceLineItemClassifications.Last: TInvoiceLineItemClassification;
+begin if Count = 0 then Result := nil else Result := TInvoiceLineItemClassification(inherited Last); end;
+
+procedure TInvoiceLineItemClassifications.SetItem(Index: TInvoiceListItemType; AItem: TInvoiceLineItemClassification);
 begin inherited Items[Index] := AItem; end;
 
 { TInvoicePaymentType }

@@ -28,20 +28,26 @@ unit intf.XRechnungHelper;
 
 interface
 
-{$IFNDEF FPC}
-// MSXML/XPath-basierter Lese-Helfer: ausschliesslich Windows/Delphi.
-// Im FreePascal-Schreib-Scope wird dieser Helfer nicht benoetigt; die Unit
-// bleibt unter FPC bewusst leer (siehe Portierungsdoku).
+// XPath-basierter Lese-Helfer. Unter Delphi liegt MSXML darunter, unter
+// FreePascal fcl-xml ueber intf.XRechnungXmlShim - die Signaturen und das
+// Verhalten sind in beiden Faellen identisch, damit der Lesecode in
+// intf.XRechnung_3_0.pas ungeteilt bleibt.
 
 uses
+  {$IFDEF FPC}
+  SysUtils, Classes, StrUtils
+  ,intf.XRechnungXmlShim
+  {$ELSE}
   System.SysUtils, System.Classes,System.StrUtils
   ,Xml.xmldom,Xml.XMLDoc,Xml.XMLIntf,Xml.XMLSchema
   ,Xml.Win.msxmldom, Winapi.MSXMLIntf, Winapi.msxml
+  {$ENDIF}
   ;
 
 type
   TXRechnungXMLHelper = class(TObject)
   public
+    class function LocalName(const _NodeName : String) : String;
     class function FindChild(_Node : IXMLNode; const _NodeName : String; out _Result : IXMLNode) : Boolean;
     class function SelectNode(_XnRoot: IXMLDOMNode; const _NodePath: String; out _Result : IXMLDOMNode): Boolean;
     class function SelectNodes(_XnRoot: IXMLDOMNode; const _NodePath: String; out _Result : IXMLDOMNodeList): Boolean;
@@ -100,6 +106,11 @@ begin
   Result := _Result <> nil;
 end;
 
+class function TXRechnungXMLHelper.LocalName(const _NodeName: String): String;
+begin
+  Result := Copy(_NodeName,Pos(':',_NodeName)+1,MaxInt);
+end;
+
 class function TXRechnungXMLHelper.FindChild(_Node: IXMLNode; const _NodeName: String;
   out _Result: IXMLNode): Boolean;
 begin
@@ -107,9 +118,29 @@ begin
   if _Node = nil then
     exit;
   _Result := _Node.ChildNodes.FindNode(_NodeName,'');
+  //Namespace-Praefixe sind frei waehlbar (n1:CustomizationID statt
+  //cbc:CustomizationID), daher ersatzweise ueber den lokalen Namen suchen
+  if (_Result = nil) and (Pos(':',_NodeName) > 0) then
+    _Result := _Node.ChildNodes.FindNode(LocalName(_NodeName),'');
   Result := _Result <> nil;
 end;
 
+{$IFDEF FPC}
+class function TXRechnungXMLHelper.PrepareDocumentForXPathQuerys(
+  _Xml: IXMLDocument): IXMLDOMDocument2;
+begin
+  // Unter fcl-xml ist kein zweites Dokument noetig: der Shim liefert eine
+  // XPath-Sicht auf dieselben Knoten. Die Praefixbindung cbc/cac/ram/rsm/udt/
+  // qdt steckt fest im Namespace-Resolver des Shims und entspricht dem, was
+  // unter MSXML per setProperty('SelectionNamespaces', ...) gesetzt wird.
+  Result := nil;
+  if _Xml = nil then
+    exit;
+  if not _Xml.Active then
+    exit;
+  Result := _Xml.AsDOMDocument;
+end;
+{$ELSE}
 class function TXRechnungXMLHelper.PrepareDocumentForXPathQuerys(
   _Xml: IXMLDocument): IXMLDOMDocument2;
 var
@@ -169,6 +200,7 @@ begin
   Result.setProperty('SelectionLanguage', 'XPath');  // ab 4.0 ist SelectionLanguage eh immer XPath
   Result.setProperty('SelectionNamespaces', sNsLine) ;
 end;
+{$ENDIF}
 
 class function TXRechnungXMLHelper.FindNode(_XnRoot: IXMLDOMNode; const _NodePath: String): Boolean;
 var
@@ -176,9 +208,5 @@ var
 begin
   Result := TXRechnungXMLHelper.SelectNode(_XnRoot,_NodePath,Node);
 end;
-
-{$ELSE}
-implementation
-{$ENDIF}
 
 end.

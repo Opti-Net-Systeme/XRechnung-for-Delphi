@@ -805,7 +805,8 @@ type
     insc_TXD,  //Informationen zur Steuer
     insc_CUS,  //Zollinformationen
     insc_PMT,  //Payment Information Bürgschaften oder Sicherheitseinbehalte
-    insc_BLP   //Gesetzliche Vorschriften (Legislation), z. B. Aufbewahrungspflicht nach §14b UStG
+    insc_BLP,  //Gesetzliche Vorschriften (Legislation), z. B. Aufbewahrungspflicht nach §14b UStG
+    insc_DIN   //Lieferanweisungen (Delivery instructions), z. B. Incoterms
     );
 
   TInvoiceNote = class(Tobject)

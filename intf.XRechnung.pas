@@ -1342,6 +1342,9 @@ begin
   if SameText(_Val,'BLP') then
     Result := insc_BLP
   else
+  if SameText(_Val,'DIN') then
+    Result := insc_DIN
+  else
     Result := insc_None;
 end;
 
@@ -1359,6 +1362,7 @@ begin
     insc_CUS: Result := 'CUS';
     insc_PMT: Result := 'PMT';
     insc_BLP: Result := 'BLP';
+    insc_DIN: Result := 'DIN';
     else Result := '';
   end;
 end;
